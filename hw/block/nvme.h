@@ -18,6 +18,16 @@ typedef struct NvmeBar {
     uint32_t    cmbsz;
 } NvmeBar;
 
+enum NvmeNsSelect {
+	NVME_NS_CONTROLLER_ATTACH = 0,
+	NVME_NS_CONTROLLER_DETACH = 1,
+};
+
+enum NvmeNsManagement {
+    NVME_NS_CREATE = 0,
+    NVME_NS_DELETE = 1,
+};
+
 enum NvmeCapShift {
     CAP_MQES_SHIFT     = 0,
     CAP_CQR_SHIFT      = 16,
@@ -234,8 +244,10 @@ enum NvmeAdminCommands {
     NVME_ADM_CMD_SET_FEATURES   = 0x09,
     NVME_ADM_CMD_GET_FEATURES   = 0x0a,
     NVME_ADM_CMD_ASYNC_EV_REQ   = 0x0c,
+    NVME_ADM_CMD_NS_MANAGEMENT  = 0x0d,
     NVME_ADM_CMD_ACTIVATE_FW    = 0x10,
     NVME_ADM_CMD_DOWNLOAD_FW    = 0x11,
+    NVME_ADM_CMD_NS_ATTACH      = 0x15,
     NVME_ADM_CMD_FORMAT_NVM     = 0x80,
     NVME_ADM_CMD_SECURITY_SEND  = 0x81,
     NVME_ADM_CMD_SECURITY_RECV  = 0x82,
@@ -428,6 +440,13 @@ enum NvmeStatusCodes {
     NVME_CMD_ABORT_MISSING_FUSE = 0x000a,
     NVME_INVALID_NSID           = 0x000b,
     NVME_CMD_SEQ_ERROR          = 0x000c,
+    NVME_NS_INSUFF_CAP          = 0x0015,
+    NVME_NS_ID_UNAVAILABLE      = 0x0016,
+    NVME_NS_ALREADY_ATTACHED    = 0x0018,
+    NVME_NS_PRIVATE             = 0x0019,
+    NVME_NS_NOT_ATTACHED        = 0x001A,
+    NVME_THIN_PROV_NOT_SUP      = 0x001B,
+    NVME_CTRL_LIST_INVALID      = 0x001C,
     NVME_LBA_RANGE              = 0x0080,
     NVME_CAP_EXCEEDED           = 0x0081,
     NVME_NS_NOT_READY           = 0x0082,
@@ -544,7 +563,8 @@ typedef struct NvmeIdCtrl {
     uint8_t     ieee[3];
     uint8_t     cmic;
     uint8_t     mdts;
-    uint8_t     rsvd255[178];
+    uint16_t    cntlid;
+    uint8_t     rsvd255[176];
     uint16_t    oacs;
     uint8_t     acl;
     uint8_t     aerl;
@@ -552,7 +572,10 @@ typedef struct NvmeIdCtrl {
     uint8_t     lpa;
     uint8_t     elpe;
     uint8_t     npss;
-    uint8_t     rsvd511[248];
+    uint8_t     rsvd279[16];
+    uint64_t    tnvmcap;
+    uint64_t    unvmcap;
+    uint8_t     rsvd511[216];
     uint8_t     sqes;
     uint8_t     cqes;
     uint16_t    rsvd515;
@@ -652,7 +675,9 @@ typedef struct NvmeIdNs {
     uint8_t     mc;
     uint8_t     dpc;
     uint8_t     dps;
-    uint8_t     res30[98];
+    uint8_t     res30[18];
+    uint64_t    nvmcap;
+    uint8_t     res64[72];
     NvmeLBAF    lbaf[16];
     uint8_t     res192[192];
     uint8_t     vs[3712];
@@ -706,6 +731,7 @@ typedef struct NvmeAsyncEvent {
 
 typedef struct NvmeRequest {
     struct NvmeSQueue       *sq;
+    struct NvmeNamespace    *ns;
     BlockAIOCB              *aiocb;
     uint16_t                status;
     bool                    has_sg;
@@ -746,7 +772,16 @@ typedef struct NvmeCQueue {
 } NvmeCQueue;
 
 typedef struct NvmeNamespace {
+    struct NvmeCtrl *ctrl;
+    bool            created;
     NvmeIdNs        id_ns;
+    NvmeRangeType   lba_range[64];
+    unsigned long   *util;
+    unsigned long   *uncorrectable;
+    uint32_t        id;
+    uint64_t        start_byte_index;
+    uint64_t        meta_start_offset;
+    BlockConf       conf;
 } NvmeNamespace;
 
 #define TYPE_NVME "nvme"
@@ -760,28 +795,68 @@ typedef struct NvmeCtrl {
     NvmeBar      bar;
     BlockConf    conf;
 
-    uint32_t    page_size;
+    time_t      start_time;
+    uint16_t    temperature;
+    uint16_t    page_size;
     uint16_t    page_bits;
     uint16_t    max_prp_ents;
     uint16_t    cqe_size;
     uint16_t    sqe_size;
+    uint16_t    oacs;
+    uint16_t    oncs;
     uint32_t    reg_size;
     uint32_t    num_namespaces;
     uint32_t    num_queues;
     uint32_t    max_q_ents;
-    uint64_t    ns_size;
+    uint64_t    nvm_capacity;
+    uint8_t     db_stride;
+    uint8_t     aerl;
+    uint8_t     acl;
+    uint8_t     elpe;
+    uint8_t     elp_index;
+    uint8_t     error_count;
+    uint8_t     mdts;
+    uint8_t     cqr;
+    uint8_t     max_sqes;
+    uint8_t     max_cqes;
+    uint8_t     meta;
+    uint8_t     vwc;
+    uint8_t     mc;
+    uint8_t     dpc;
+    uint8_t     dps;
+    uint8_t     nlbaf;
+    uint8_t     extended;
+    uint8_t     lba_index;
+    uint8_t     mpsmin;
+    uint8_t     mpsmax;
+    uint8_t     intc;
+    uint8_t     intc_thresh;
+    uint8_t     intc_time;
+    uint8_t     outstanding_aers;
+    uint8_t     temp_warn_issued;
+    uint8_t     num_errors;
+    uint8_t     cqes_pending;
+    uint16_t    vid;
+    uint16_t    did;
     uint32_t    cmb_size_mb;
     uint32_t    cmbsz;
     uint32_t    cmbloc;
     uint8_t     *cmbuf;
 
     char            *serial;
+    NvmeErrorLog    *elpes;
+    NvmeRequest     **aer_reqs;
     NvmeNamespace   *namespaces;
     NvmeSQueue      **sq;
     NvmeCQueue      **cq;
     NvmeSQueue      admin_sq;
     NvmeCQueue      admin_cq;
+    NvmeFeatureVal  features;
     NvmeIdCtrl      id_ctrl;
+
+    QSIMPLEQ_HEAD(aer_queue, NvmeAsyncEvent) aer_queue;
+    QEMUTimer   *aer_timer;
+    uint8_t     aer_mask;
 } NvmeCtrl;
 
 #endif /* HW_NVME_H */
