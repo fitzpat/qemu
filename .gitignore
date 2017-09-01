@@ -131,3 +131,9 @@ trace-dtrace-root.h
 trace-dtrace-root.dtrace
 trace-ust-all.h
 trace-ust-all.c
+.cproject
+.project
+.settings/
+bin/
+start_script
+
