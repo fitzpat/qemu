@@ -81,18 +81,18 @@ int main(int argc, char **argv)
 #include "sysemu/numa.h"
 #include "exec/gdbstub.h"
 #include "qemu/timer.h"
-#include "sysemu/char.h"
+#include "chardev/char.h"
 #include "qemu/bitmap.h"
 #include "qemu/log.h"
 #include "sysemu/blockdev.h"
 #include "hw/block/block.h"
 #include "migration/misc.h"
 #include "migration/snapshot.h"
+#include "migration/global_state.h"
 #include "sysemu/tpm.h"
 #include "sysemu/dma.h"
 #include "hw/audio/soundhw.h"
 #include "audio/audio.h"
-#include "migration/migration.h"
 #include "sysemu/cpus.h"
 #include "migration/colo.h"
 #include "sysemu/kvm.h"
@@ -188,7 +188,6 @@ bool boot_strict;
 uint8_t *boot_splash_filedata;
 size_t boot_splash_filedata_size;
 uint8_t qemu_extra_params_fw[2];
-int only_migratable; /* turn it off unless user states otherwise */
 
 int icount_align_option;
 
@@ -953,8 +952,8 @@ static void bt_vhci_add(int vlan_id)
     struct bt_scatternet_s *vlan = qemu_find_bt_vlan(vlan_id);
 
     if (!vlan->slave)
-        error_report("warning: adding a VHCI to an empty scatternet %i",
-                     vlan_id);
+        warn_report("adding a VHCI to an empty scatternet %i",
+                    vlan_id);
 
     bt_vhci_init(bt_new_hci(vlan));
 }
@@ -980,8 +979,8 @@ static struct bt_device_s *bt_device_add(const char *opt)
     vlan = qemu_find_bt_vlan(vlan_id);
 
     if (!vlan->slave)
-        error_report("warning: adding a slave device to an empty scatternet %i",
-                     vlan_id);
+        warn_report("adding a slave device to an empty scatternet %i",
+                    vlan_id);
 
     if (!strcmp(devname, "keyboard"))
         return bt_keyboard_init(vlan);
@@ -1943,7 +1942,9 @@ static void help(int exitcode)
            "ctrl-alt-n      switch to virtual console 'n'\n"
            "ctrl-alt        toggle mouse and keyboard grab\n"
            "\n"
-           "When using -nographic, press 'ctrl-a h' to get some help.\n");
+           "When using -nographic, press 'ctrl-a h' to get some help.\n"
+           "\n"
+           QEMU_HELP_BOTTOM "\n");
 
     exit(exitcode);
 }
@@ -2303,8 +2304,8 @@ static int parse_fw_cfg(void *opaque, QemuOpts *opts, Error **errp)
         return -1;
     }
     if (strncmp(name, "opt/", 4) != 0) {
-        error_report("warning: externally provided fw_cfg item names "
-                     "should be prefixed with \"opt/\"");
+        warn_report("externally provided fw_cfg item names "
+                    "should be prefixed with \"opt/\"");
     }
     if (nonempty_str(str)) {
         size = strlen(str); /* NUL terminator NOT included in fw_cfg blob */
@@ -2345,10 +2346,12 @@ static int chardev_init_func(void *opaque, QemuOpts *opts, Error **errp)
 {
     Error *local_err = NULL;
 
-    qemu_chr_new_from_opts(opts, &local_err);
-    if (local_err) {
-        error_report_err(local_err);
-        return -1;
+    if (!qemu_chr_new_from_opts(opts, &local_err)) {
+        if (local_err) {
+            error_report_err(local_err);
+            return -1;
+        }
+        exit(0);
     }
     return 0;
 }
@@ -2967,6 +2970,25 @@ static int qemu_read_default_config_file(void)
     }
 
     return 0;
+}
+
+static void user_register_global_props(void)
+{
+    qemu_opts_foreach(qemu_find_opts("global"),
+                      global_init_func, NULL, NULL);
+}
+
+/*
+ * Note: we should see that these properties are actually having a
+ * priority: accel < machine < user. This means e.g. when user
+ * specifies something in "-global", it'll always be used with highest
+ * priority than either machine/accelerator compat properties.
+ */
+static void register_global_properties(MachineState *ms)
+{
+    accel_register_compat_props(ms->accelerator);
+    machine_register_compat_props(ms);
+    user_register_global_props();
 }
 
 int main(int argc, char **argv, char **envp)
@@ -3742,7 +3764,7 @@ int main(int argc, char **argv, char **envp)
                 qemu_opts_parse_noisily(olist, "accel=tcg", false);
                 break;
             case QEMU_OPTION_no_kvm_pit: {
-                error_report("warning: ignoring deprecated option");
+                warn_report("ignoring deprecated option");
                 break;
             }
             case QEMU_OPTION_no_kvm_pit_reinjection: {
@@ -3752,26 +3774,23 @@ int main(int argc, char **argv, char **envp)
                     .value    = "discard",
                 };
 
-                error_report("warning: deprecated, replaced by "
-                             "-global kvm-pit.lost_tick_policy=discard");
+                warn_report("deprecated, replaced by "
+                            "-global kvm-pit.lost_tick_policy=discard");
                 qdev_prop_register_global(&kvm_pit_lost_tick_policy);
                 break;
             }
-            case QEMU_OPTION_accel: {
-                QemuOpts *accel_opts;
-
+            case QEMU_OPTION_accel:
                 accel_opts = qemu_opts_parse_noisily(qemu_find_opts("accel"),
                                                      optarg, true);
                 optarg = qemu_opt_get(accel_opts, "accel");
                 if (!optarg || is_help_option(optarg)) {
                     error_printf("Possible accelerators: kvm, xen, hax, tcg\n");
-                    exit(1);
+                    exit(0);
                 }
-                accel_opts = qemu_opts_create(qemu_find_opts("machine"), NULL,
-                                              false, &error_abort);
-                qemu_opt_set(accel_opts, "accel", optarg, &error_abort);
+                opts = qemu_opts_create(qemu_find_opts("machine"), NULL,
+                                        false, &error_abort);
+                qemu_opt_set(opts, "accel", optarg, &error_abort);
                 break;
-            }
             case QEMU_OPTION_usb:
                 olist = qemu_find_opts("machine");
                 qemu_opts_parse_noisily(olist, "usb=on", false);
@@ -3881,7 +3900,7 @@ int main(int argc, char **argv, char **envp)
                 }
                 break;
             case QEMU_OPTION_tdf:
-                error_report("warning: ignoring deprecated option");
+                warn_report("ignoring deprecated option");
                 break;
             case QEMU_OPTION_name:
                 opts = qemu_opts_parse_noisily(qemu_find_opts("name"),
@@ -3918,9 +3937,13 @@ int main(int argc, char **argv, char **envp)
                 configure_rtc(opts);
                 break;
             case QEMU_OPTION_tb_size:
-                tcg_tb_size = strtol(optarg, NULL, 0);
-                if (tcg_tb_size < 0) {
-                    tcg_tb_size = 0;
+#ifndef CONFIG_TCG
+                error_report("TCG is disabled");
+                exit(1);
+#endif
+                if (qemu_strtoul(optarg, NULL, 0, &tcg_tb_size) < 0) {
+                    error_report("Invalid argument to -tb-size");
+                    exit(1);
                 }
                 break;
             case QEMU_OPTION_icount:
@@ -3937,7 +3960,13 @@ int main(int argc, char **argv, char **envp)
                 incoming = optarg;
                 break;
             case QEMU_OPTION_only_migratable:
-                only_migratable = 1;
+                /*
+                 * TODO: we can remove this option one day, and we
+                 * should all use:
+                 *
+                 * "-global migration.only-migratable=true"
+                 */
+                qemu_global_option("migration.only-migratable=true");
                 break;
             case QEMU_OPTION_nodefaults:
                 has_defaults = 0;
@@ -4094,6 +4123,7 @@ int main(int argc, char **argv, char **envp)
     set_memory_options(&ram_slots, &maxram_size, machine_class);
 
     os_daemonize();
+    rcu_disable_atfork();
 
     if (pid_file && qemu_create_pidfile(pid_file) != 0) {
         error_report("could not acquire pid file: %s", strerror(errno));
@@ -4393,6 +4423,18 @@ int main(int argc, char **argv, char **envp)
 
     configure_accelerator(current_machine);
 
+    /*
+     * Register all the global properties, including accel properties,
+     * machine properties, and user-specified ones.
+     */
+    register_global_properties(current_machine);
+
+    /*
+     * Migration object can only be created after global properties
+     * are applied correctly.
+     */
+    migration_object_init();
+
     if (qtest_chrdev) {
         qtest_init(qtest_chrdev, qtest_log, &error_fatal);
     }
@@ -4460,7 +4502,9 @@ int main(int argc, char **argv, char **envp)
         qemu_opts_del(icount_opts);
     }
 
-    qemu_tcg_configure(accel_opts, &error_fatal);
+    if (tcg_enabled()) {
+        qemu_tcg_configure(accel_opts, &error_fatal);
+    }
 
     if (default_net) {
         QemuOptsList *net = qemu_find_opts("net");
@@ -4573,11 +4617,6 @@ int main(int argc, char **argv, char **envp)
         if (i > 0)
             exit (i == 1 ? 1 : 0);
     }
-
-    machine_register_compat_props(current_machine);
-
-    qemu_opts_foreach(qemu_find_opts("global"),
-                      global_init_func, NULL, NULL);
 
     /* This checkpoint is required by replay to separate prior clock
        reading from the other reads, because timer polling functions query
@@ -4753,8 +4792,8 @@ int main(int argc, char **argv, char **envp)
     replay_disable_events();
     iothread_stop_all();
 
-    bdrv_close_all();
     pause_all_vcpus();
+    bdrv_close_all();
     res_free();
 
     /* vhost-user must be cleaned up before chardevs.  */

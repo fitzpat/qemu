@@ -19,7 +19,6 @@
 #endif
 #include "qapi/qmp/json-streamer.h"
 #include "qapi/qmp/json-parser.h"
-#include "qapi/qmp/qint.h"
 #include "qapi/qmp/qjson.h"
 #include "qga/guest-agent-core.h"
 #include "qemu/module.h"
@@ -30,6 +29,7 @@
 #include "qemu/help_option.h"
 #include "qemu/sockets.h"
 #include "qemu/systemd.h"
+#include "qemu-version.h"
 #ifdef _WIN32
 #include "qga/service-win32.h"
 #include "qga/vss-win32.h"
@@ -214,7 +214,8 @@ static void usage(const char *cmd)
 {
     printf(
 "Usage: %s [-m <method> -p <path>] [<options>]\n"
-"QEMU Guest Agent %s\n"
+"QEMU Guest Agent " QEMU_VERSION QEMU_PKGVERSION "\n"
+QEMU_COPYRIGHT "\n"
 "\n"
 "  -m, --method      transport method: one of unix-listen, virtio-serial,\n"
 "                    isa-serial, or vsock-listen (virtio-serial is the default)\n"
@@ -248,8 +249,8 @@ static void usage(const char *cmd)
 "                    options / command-line parameters to stdout\n"
 "  -h, --help        display this help and exit\n"
 "\n"
-"Report bugs to <mdroth@linux.vnet.ibm.com>\n"
-    , cmd, QEMU_VERSION, QGA_VIRTIO_PATH_DEFAULT, QGA_SERIAL_PATH_DEFAULT,
+QEMU_HELP_BOTTOM "\n"
+    , cmd, QGA_VIRTIO_PATH_DEFAULT, QGA_SERIAL_PATH_DEFAULT,
     dfl_pathnames.pidfile,
 #ifdef CONFIG_FSFREEZE
     QGA_FSFREEZE_HOOK_DEFAULT,
@@ -1075,7 +1076,12 @@ static void config_dump(GAConfig *config)
     g_free(tmp);
 
     tmp = g_key_file_to_data(keyfile, NULL, &error);
-    printf("%s", tmp);
+    if (error) {
+        g_critical("Failed to dump keyfile: %s", error->message);
+        g_clear_error(&error);
+    } else {
+        printf("%s", tmp);
+    }
 
     g_free(tmp);
     g_key_file_free(keyfile);
@@ -1315,7 +1321,7 @@ static int run_agent(GAState *s, GAConfig *config, int socket_activation)
     ga_command_state_init(s, s->command_state);
     ga_command_state_init_all(s->command_state);
     json_message_parser_init(&s->parser, process_event);
-    ga_state = s;
+
 #ifndef _WIN32
     if (!register_signal_handlers()) {
         g_critical("failed to register signal handlers");

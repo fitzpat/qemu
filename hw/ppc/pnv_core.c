@@ -51,7 +51,7 @@ static void powernv_cpu_init(PowerPCCPU *cpu, Error **errp)
     int thread_index = 0; /* TODO: TCG supports only one thread */
     ppc_spr_t *pir = &env->spr_cb[SPR_PIR];
 
-    core_pir = object_property_get_int(OBJECT(cpu), "core-pir", &error_abort);
+    core_pir = object_property_get_uint(OBJECT(cpu), "core-pir", &error_abort);
 
     /*
      * The PIR of a thread is the core PIR + the thread index. We will
@@ -118,18 +118,20 @@ static void pnv_core_realize_child(Object *child, XICSFabric *xi, Error **errp)
     PowerPCCPU *cpu = POWERPC_CPU(cs);
     Object *obj;
 
-    obj = object_new(TYPE_PNV_ICP);
-    object_property_add_child(OBJECT(cpu), "icp", obj, NULL);
-    object_property_add_const_link(obj, "xics", OBJECT(xi), &error_abort);
-    object_property_set_bool(obj, true, "realized", &local_err);
+    object_property_set_bool(child, true, "realized", &local_err);
     if (local_err) {
         error_propagate(errp, local_err);
         return;
     }
 
-    object_property_set_bool(child, true, "realized", &local_err);
+    obj = object_new(TYPE_PNV_ICP);
+    object_property_add_child(child, "icp", obj, NULL);
+    object_unref(obj);
+    object_property_add_const_link(obj, ICP_PROP_XICS, OBJECT(xi),
+                                   &error_abort);
+    object_property_add_const_link(obj, ICP_PROP_CPU, child, &error_abort);
+    object_property_set_bool(obj, true, "realized", &local_err);
     if (local_err) {
-        object_unparent(obj);
         error_propagate(errp, local_err);
         return;
     }
@@ -140,8 +142,6 @@ static void pnv_core_realize_child(Object *child, XICSFabric *xi, Error **errp)
         error_propagate(errp, local_err);
         return;
     }
-
-    xics_cpu_setup(xi, cpu, ICP(obj));
 }
 
 static void pnv_core_realize(DeviceState *dev, Error **errp)

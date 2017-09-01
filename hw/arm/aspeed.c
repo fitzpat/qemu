@@ -180,8 +180,8 @@ static void aspeed_board_init(MachineState *machine,
 
     sc = ASPEED_SOC_GET_CLASS(&bmc->soc);
 
-    object_property_set_int(OBJECT(&bmc->soc), ram_size, "ram-size",
-                           &error_abort);
+    object_property_set_uint(OBJECT(&bmc->soc), ram_size, "ram-size",
+                             &error_abort);
     object_property_set_int(OBJECT(&bmc->soc), cfg->hw_strap1, "hw-strap1",
                             &error_abort);
     object_property_set_int(OBJECT(&bmc->soc), cfg->num_cs, "num-cs",
@@ -193,8 +193,8 @@ static void aspeed_board_init(MachineState *machine,
      * Allocate RAM after the memory controller has checked the size
      * was valid. If not, a default value is used.
      */
-    ram_size = object_property_get_int(OBJECT(&bmc->soc), "ram-size",
-                                       &error_abort);
+    ram_size = object_property_get_uint(OBJECT(&bmc->soc), "ram-size",
+                                        &error_abort);
 
     memory_region_allocate_system_memory(&bmc->ram, NULL, "ram", ram_size);
     memory_region_add_subregion(get_system_memory(), sc->info->sdram_base,
@@ -216,7 +216,7 @@ static void aspeed_board_init(MachineState *machine,
          * SoC and 128MB for the AST2500 SoC, which is twice as big as
          * needed by the flash modules of the Aspeed machines.
          */
-        memory_region_init_rom(boot_rom, OBJECT(bmc), "aspeed.boot_rom",
+        memory_region_init_rom_nomigrate(boot_rom, OBJECT(bmc), "aspeed.boot_rom",
                                fl->size, &error_abort);
         memory_region_add_subregion(get_system_memory(), FIRMWARE_ADDR,
                                     boot_rom);
@@ -239,10 +239,19 @@ static void aspeed_board_init(MachineState *machine,
 static void palmetto_bmc_i2c_init(AspeedBoardState *bmc)
 {
     AspeedSoCState *soc = &bmc->soc;
+    DeviceState *dev;
 
     /* The palmetto platform expects a ds3231 RTC but a ds1338 is
      * enough to provide basic RTC features. Alarms will be missing */
     i2c_create_slave(aspeed_i2c_get_bus(DEVICE(&soc->i2c), 0), "ds1338", 0x68);
+
+    /* add a TMP423 temperature sensor */
+    dev = i2c_create_slave(aspeed_i2c_get_bus(DEVICE(&soc->i2c), 2),
+                           "tmp423", 0x4c);
+    object_property_set_int(OBJECT(dev), 31000, "temperature0", &error_abort);
+    object_property_set_int(OBJECT(dev), 28000, "temperature1", &error_abort);
+    object_property_set_int(OBJECT(dev), 20000, "temperature2", &error_abort);
+    object_property_set_int(OBJECT(dev), 110000, "temperature3", &error_abort);
 }
 
 static void palmetto_bmc_init(MachineState *machine)

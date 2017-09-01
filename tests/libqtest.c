@@ -140,8 +140,8 @@ void qtest_add_abrt_handler(GHookFunc fn, const void *data)
     /* Only install SIGABRT handler once */
     if (!abrt_hooks.is_setup) {
         g_hook_list_init(&abrt_hooks, sizeof(GHook));
-        setup_sigabrt_handler();
     }
+    setup_sigabrt_handler();
 
     hook = g_hook_alloc(&abrt_hooks);
     hook->func = fn;
@@ -160,7 +160,10 @@ QTestState *qtest_init_without_qmp_handshake(const char *extra_args)
     const char *qemu_binary;
 
     qemu_binary = getenv("QTEST_QEMU_BINARY");
-    g_assert(qemu_binary != NULL);
+    if (!qemu_binary) {
+        fprintf(stderr, "Environment variable QTEST_QEMU_BINARY required\n");
+        exit(1);
+    }
 
     s = g_malloc(sizeof(*s));
 

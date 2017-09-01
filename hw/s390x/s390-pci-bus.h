@@ -24,6 +24,7 @@
 #define TYPE_S390_PCI_BUS "s390-pcibus"
 #define TYPE_S390_PCI_DEVICE "zpci"
 #define TYPE_S390_PCI_IOMMU "s390-pci-iommu"
+#define TYPE_S390_IOMMU_MEMORY_REGION "s390-iommu-memory-region"
 #define FH_MASK_ENABLE   0x80000000
 #define FH_MASK_INSTANCE 0x7f000000
 #define FH_MASK_SHM      0x00ff0000
@@ -243,14 +244,6 @@ typedef struct ChscSeiNt2Res {
     uint8_t ccdf[4016];
 } QEMU_PACKED ChscSeiNt2Res;
 
-typedef struct PciCfgSccb {
-    SCCBHeader header;
-    uint8_t atype;
-    uint8_t reserved1;
-    uint16_t reserved2;
-    uint32_t aid;
-} QEMU_PACKED PciCfgSccb;
-
 typedef struct S390MsixInfo {
     bool available;
     uint8_t table_bar;
@@ -266,7 +259,7 @@ typedef struct S390PCIIOMMU {
     S390PCIBusDevice *pbdev;
     AddressSpace as;
     MemoryRegion mr;
-    MemoryRegion iommu_mr;
+    IOMMUMemoryRegion iommu_mr;
     bool enabled;
     uint64_t g_iota;
     uint64_t pba;
@@ -318,8 +311,8 @@ typedef struct S390pciState {
 } S390pciState;
 
 S390pciState *s390_get_phb(void);
-int chsc_sei_nt2_get_event(void *res);
-int chsc_sei_nt2_have_event(void);
+int pci_chsc_sei_nt2_get_event(void *res);
+int pci_chsc_sei_nt2_have_event(void);
 void s390_pci_sclp_configure(SCCB *sccb);
 void s390_pci_sclp_deconfigure(SCCB *sccb);
 void s390_pci_iommu_enable(S390PCIIOMMU *iommu);

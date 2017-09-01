@@ -347,7 +347,7 @@ static int check_fdc(Object *obj, void *opaque)
         return 0;
     }
 
-    iobase = object_property_get_int(obj, "iobase", &local_err);
+    iobase = object_property_get_uint(obj, "iobase", &local_err);
     if (local_err || iobase != 0x3f0) {
         error_free(local_err);
         return 0;
@@ -381,8 +381,8 @@ ISADevice *pc_find_fdc0(void)
     }
 
     if (state.multiple) {
-        error_report("warning: multiple floppy disk controllers with "
-                     "iobase=0x3f0 have been found");
+        warn_report("multiple floppy disk controllers with "
+                    "iobase=0x3f0 have been found");
         error_printf("the one being picked for CMOS setup might not reflect "
                      "your intent\n");
     }
@@ -788,9 +788,7 @@ static FWCfgState *bochs_bios_init(AddressSpace *as, PCMachineState *pcms)
     for (i = 0; i < cpus->len; i++) {
         unsigned int apic_id = cpus->cpus[i].arch_id;
         assert(apic_id < pcms->apic_id_limit);
-        if (cpus->cpus[i].props.has_node_id) {
-            numa_fw_cfg[apic_id + 1] = cpu_to_le64(cpus->cpus[i].props.node_id);
-        }
+        numa_fw_cfg[apic_id + 1] = cpu_to_le64(cpus->cpus[i].props.node_id);
     }
     for (i = 0; i < nb_numa_nodes; i++) {
         numa_fw_cfg[pcms->apic_id_limit + 1 + i] =
@@ -1100,7 +1098,7 @@ static void pc_new_cpu(const char *typename, int64_t apic_id, Error **errp)
 
     cpu = object_new(typename);
 
-    object_property_set_int(cpu, apic_id, "apic-id", &local_err);
+    object_property_set_uint(cpu, apic_id, "apic-id", &local_err);
     object_property_set_bool(cpu, true, "realized", &local_err);
 
     object_unref(cpu);
@@ -1322,8 +1320,7 @@ void pc_acpi_init(const char *default_dsdt)
 
         acpi_table_add_builtin(opts, &err);
         if (err) {
-            error_reportf_err(err, "WARNING: failed to load %s: ",
-                              filename);
+            warn_reportf_err(err, "failed to load %s: ", filename);
         }
         g_free(filename);
     }
@@ -1446,7 +1443,9 @@ void pc_memory_init(PCMachineState *pcms,
     option_rom_mr = g_malloc(sizeof(*option_rom_mr));
     memory_region_init_ram(option_rom_mr, NULL, "pc.rom", PC_ROM_SIZE,
                            &error_fatal);
-    vmstate_register_ram_global(option_rom_mr);
+    if (pcmc->pci_enabled) {
+        memory_region_set_readonly(option_rom_mr, true);
+    }
     memory_region_add_subregion_overlap(rom_memory,
                                         PC_ROM_MIN_VGA,
                                         option_rom_mr,
@@ -1560,7 +1559,7 @@ void pc_basic_device_init(ISABus *isa_bus, qemu_irq *gsi,
              * and earlier, use IRQ2 for compat. Otherwise, use IRQ16~23,
              * IRQ8 and IRQ2.
              */
-            uint8_t compat = object_property_get_int(OBJECT(hpet),
+            uint8_t compat = object_property_get_uint(OBJECT(hpet),
                     HPET_INTCAP, NULL);
             if (!compat) {
                 qdev_prop_set_uint32(hpet, HPET_INTCAP, hpet_irqs);
@@ -1692,8 +1691,14 @@ static void pc_dimm_plug(HotplugHandler *hotplug_dev,
     PCMachineClass *pcmc = PC_MACHINE_GET_CLASS(pcms);
     PCDIMMDevice *dimm = PC_DIMM(dev);
     PCDIMMDeviceClass *ddc = PC_DIMM_GET_CLASS(dimm);
-    MemoryRegion *mr = ddc->get_memory_region(dimm);
+    MemoryRegion *mr;
     uint64_t align = TARGET_PAGE_SIZE;
+    bool is_nvdimm = object_dynamic_cast(OBJECT(dev), TYPE_NVDIMM);
+
+    mr = ddc->get_memory_region(dimm, &local_err);
+    if (local_err) {
+        goto out;
+    }
 
     if (memory_region_get_alignment(mr) && pcmc->enforce_aligned_dimm) {
         align = memory_region_get_alignment(mr);
@@ -1705,17 +1710,18 @@ static void pc_dimm_plug(HotplugHandler *hotplug_dev,
         goto out;
     }
 
+    if (is_nvdimm && !pcms->acpi_nvdimm_state.is_enabled) {
+        error_setg(&local_err,
+                   "nvdimm is not enabled: missing 'nvdimm' in '-M'");
+        goto out;
+    }
+
     pc_dimm_memory_plug(dev, &pcms->hotplug_memory, mr, align, &local_err);
     if (local_err) {
         goto out;
     }
 
-    if (object_dynamic_cast(OBJECT(dev), TYPE_NVDIMM)) {
-        if (!pcms->acpi_nvdimm_state.is_enabled) {
-            error_setg(&local_err,
-                       "nvdimm is not enabled: missing 'nvdimm' in '-M'");
-            goto out;
-        }
+    if (is_nvdimm) {
         nvdimm_plug(&pcms->acpi_nvdimm_state);
     }
 
@@ -1757,9 +1763,14 @@ static void pc_dimm_unplug(HotplugHandler *hotplug_dev,
     PCMachineState *pcms = PC_MACHINE(hotplug_dev);
     PCDIMMDevice *dimm = PC_DIMM(dev);
     PCDIMMDeviceClass *ddc = PC_DIMM_GET_CLASS(dimm);
-    MemoryRegion *mr = ddc->get_memory_region(dimm);
+    MemoryRegion *mr;
     HotplugHandlerClass *hhc;
     Error *local_err = NULL;
+
+    mr = ddc->get_memory_region(dimm, &local_err);
+    if (local_err) {
+        goto out;
+    }
 
     hhc = HOTPLUG_HANDLER_GET_CLASS(pcms->acpi_dev);
     hhc->unplug(HOTPLUG_HANDLER(pcms->acpi_dev), dev, &local_err);
@@ -1893,7 +1904,6 @@ static void pc_cpu_pre_plug(HotplugHandler *hotplug_dev,
                             DeviceState *dev, Error **errp)
 {
     int idx;
-    int node_id;
     CPUState *cs;
     CPUArchId *cpu_slot;
     X86CPUTopoInfo topo;
@@ -1984,21 +1994,7 @@ static void pc_cpu_pre_plug(HotplugHandler *hotplug_dev,
     cs = CPU(cpu);
     cs->cpu_index = idx;
 
-    node_id = cpu_slot->props.node_id;
-    if (!cpu_slot->props.has_node_id) {
-        /* by default CPUState::numa_node was 0 if it's not set via CLI
-         * keep it this way for now but in future we probably should
-         * refuse to start up with incomplete numa mapping */
-        node_id = 0;
-    }
-    if (cs->numa_node == CPU_UNSET_NUMA_NODE_ID) {
-        cs->numa_node = node_id;
-    } else if (cs->numa_node != node_id) {
-            error_setg(errp, "node-id %d must match numa node specified"
-                "with -numa option for cpu-index %d",
-                cs->numa_node, cs->cpu_index);
-            return;
-    }
+    numa_cpu_pre_plug(cpu_slot, dev, errp);
 }
 
 static void pc_machine_device_pre_plug_cb(HotplugHandler *hotplug_dev,
@@ -2102,9 +2098,9 @@ static void pc_machine_set_max_ram_below_4g(Object *obj, Visitor *v,
     }
 
     if (value < (1ULL << 20)) {
-        error_report("Warning: small max_ram_below_4g(%"PRIu64
-                     ") less than 1M.  BIOS may not work..",
-                     value);
+        warn_report("small max_ram_below_4g(%"PRIu64
+                    ") less than 1M.  BIOS may not work..",
+                    value);
     }
 
     pcms->max_ram_below_4g = value;

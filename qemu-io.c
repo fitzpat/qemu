@@ -26,6 +26,7 @@
 #include "block/block_int.h"
 #include "trace/control.h"
 #include "crypto/init.h"
+#include "qemu-version.h"
 
 #define CMD_NOFILE_OK   0x01
 
@@ -58,7 +59,6 @@ static int openfile(char *name, int flags, bool writethrough, bool force_share,
                     QDict *opts)
 {
     Error *local_err = NULL;
-    BlockDriverState *bs;
 
     if (qemuio_blk) {
         error_report("file open already, try 'help close'");
@@ -85,28 +85,9 @@ static int openfile(char *name, int flags, bool writethrough, bool force_share,
         return 1;
     }
 
-    bs = blk_bs(qemuio_blk);
-    if (bdrv_is_encrypted(bs) && bdrv_key_required(bs)) {
-        char password[256];
-        printf("Disk image '%s' is encrypted.\n", name);
-        if (qemu_read_password(password, sizeof(password)) < 0) {
-            error_report("No password given");
-            goto error;
-        }
-        if (bdrv_set_key(bs, password) < 0) {
-            error_report("invalid password");
-            goto error;
-        }
-    }
-
     blk_set_enable_write_cache(qemuio_blk, !writethrough);
 
     return 0;
-
- error:
-    blk_unref(qemuio_blk);
-    qemuio_blk = NULL;
-    return 1;
 }
 
 static void open_help(void)
@@ -230,13 +211,14 @@ static int open_f(BlockBackend *blk, int argc, char **argv)
     qemu_opts_reset(&empty_opts);
 
     if (optind == argc - 1) {
-        return openfile(argv[optind], flags, writethrough, force_share, opts);
+        openfile(argv[optind], flags, writethrough, force_share, opts);
     } else if (optind == argc) {
-        return openfile(NULL, flags, writethrough, force_share, opts);
+        openfile(NULL, flags, writethrough, force_share, opts);
     } else {
         QDECREF(opts);
-        return qemuio_command_usage(&open_cmd);
+        qemuio_command_usage(&open_cmd);
     }
+    return 0;
 }
 
 static int quit_f(BlockBackend *blk, int argc, char **argv)
@@ -280,8 +262,9 @@ static void usage(const char *name)
 "  -h, --help           display this help and exit\n"
 "  -V, --version        output version information and exit\n"
 "\n"
-"See '%s -c help' for information on available commands."
-"\n",
+"See '%s -c help' for information on available commands.\n"
+"\n"
+QEMU_HELP_BOTTOM "\n",
     name, name);
 }
 
@@ -541,7 +524,8 @@ int main(int argc, char **argv)
             trace_file = trace_opt_parse(optarg);
             break;
         case 'V':
-            printf("%s version %s\n", progname, QEMU_VERSION);
+            printf("%s version " QEMU_VERSION QEMU_PKGVERSION "\n"
+                   QEMU_COPYRIGHT "\n", progname);
             exit(0);
         case 'h':
             usage(progname);

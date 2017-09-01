@@ -20,6 +20,57 @@
 #include "sysemu/numa.h"
 #include "qemu/error-report.h"
 
+void spapr_cpu_parse_features(sPAPRMachineState *spapr)
+{
+    /*
+     * Backwards compatibility hack:
+     *
+     *   CPUs had a "compat=" property which didn't make sense for
+     *   anything except pseries.  It was replaced by "max-cpu-compat"
+     *   machine option.  This supports old command lines like
+     *       -cpu POWER8,compat=power7
+     *   By stripping the compat option and applying it to the machine
+     *   before passing it on to the cpu level parser.
+     */
+    gchar **inpieces;
+    int i, j;
+    gchar *compat_str = NULL;
+
+    inpieces = g_strsplit(MACHINE(spapr)->cpu_model, ",", 0);
+
+    /* inpieces[0] is the actual model string */
+    i = 1;
+    j = 1;
+    while (inpieces[i]) {
+        if (g_str_has_prefix(inpieces[i], "compat=")) {
+            /* in case of multiple compat= options */
+            g_free(compat_str);
+            compat_str = inpieces[i];
+        } else {
+            j++;
+        }
+
+        i++;
+        /* Excise compat options from list */
+        inpieces[j] = inpieces[i];
+    }
+
+    if (compat_str) {
+        char *val = compat_str + strlen("compat=");
+        gchar *newprops = g_strjoinv(",", inpieces);
+
+        object_property_set_str(OBJECT(spapr), val, "max-cpu-compat",
+                                &error_fatal);
+
+        ppc_cpu_parse_features(newprops);
+        g_free(newprops);
+    } else {
+        ppc_cpu_parse_features(MACHINE(spapr)->cpu_model);
+    }
+
+    g_strfreev(inpieces);
+}
+
 static void spapr_cpu_reset(void *opaque)
 {
     sPAPRMachineState *spapr = SPAPR_MACHINE(qdev_get_machine());
@@ -53,9 +104,6 @@ static void spapr_cpu_reset(void *opaque)
 
 static void spapr_cpu_destroy(PowerPCCPU *cpu)
 {
-    sPAPRMachineState *spapr = SPAPR_MACHINE(qdev_get_machine());
-
-    xics_cpu_destroy(XICS_FABRIC(spapr), cpu);
     qemu_unregister_reset(spapr_cpu_reset, cpu);
 }
 
@@ -69,16 +117,6 @@ static void spapr_cpu_init(sPAPRMachineState *spapr, PowerPCCPU *cpu,
 
     /* Enable PAPR mode in TCG or KVM */
     cpu_ppc_set_papr(cpu, PPC_VIRTUAL_HYPERVISOR(spapr));
-
-    if (cpu->max_compat) {
-        Error *local_err = NULL;
-
-        ppc_set_compat(cpu, cpu->max_compat, &local_err);
-        if (local_err) {
-            error_propagate(errp, local_err);
-            return;
-        }
-    }
 
     qemu_register_reset(spapr_cpu_reset, cpu);
     spapr_cpu_reset(cpu);
@@ -142,15 +180,6 @@ static void spapr_cpu_core_realize_child(Object *child, Error **errp)
     PowerPCCPU *cpu = POWERPC_CPU(cs);
     Object *obj;
 
-    obj = object_new(spapr->icp_type);
-    object_property_add_child(OBJECT(cpu), "icp", obj, &error_abort);
-    object_unref(obj);
-    object_property_add_const_link(obj, "xics", OBJECT(spapr), &error_abort);
-    object_property_set_bool(obj, true, "realized", &local_err);
-    if (local_err) {
-        goto error;
-    }
-
     object_property_set_bool(child, true, "realized", &local_err);
     if (local_err) {
         goto error;
@@ -161,11 +190,22 @@ static void spapr_cpu_core_realize_child(Object *child, Error **errp)
         goto error;
     }
 
-    xics_cpu_setup(XICS_FABRIC(spapr), cpu, ICP(obj));
+    obj = object_new(spapr->icp_type);
+    object_property_add_child(child, "icp", obj, &error_abort);
+    object_unref(obj);
+    object_property_add_const_link(obj, ICP_PROP_XICS, OBJECT(spapr),
+                                   &error_abort);
+    object_property_add_const_link(obj, ICP_PROP_CPU, child, &error_abort);
+    object_property_set_bool(obj, true, "realized", &local_err);
+    if (local_err) {
+        goto free_icp;
+    }
+
     return;
 
-error:
+free_icp:
     object_unparent(obj);
+error:
     error_propagate(errp, local_err);
 }
 
@@ -184,15 +224,17 @@ static void spapr_cpu_core_realize(DeviceState *dev, Error **errp)
     for (i = 0; i < cc->nr_threads; i++) {
         char id[32];
         CPUState *cs;
+        PowerPCCPU *cpu;
 
         obj = sc->threads + i * size;
 
         object_initialize(obj, size, typename);
         cs = CPU(obj);
+        cpu = POWERPC_CPU(cs);
         cs->cpu_index = cc->core_id + i;
 
         /* Set NUMA node for the threads belonged to core  */
-        cs->numa_node = sc->node_id;
+        cpu->node_id = sc->node_id;
 
         snprintf(id, sizeof(id), "thread[%d]", i);
         object_property_add_child(OBJECT(sc), id, obj, &local_err);

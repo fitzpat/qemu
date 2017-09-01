@@ -11,10 +11,9 @@
  */
 
 #include "qemu/osdep.h"
-#include "qemu/timer.h"
 #include "sysemu/sysemu.h"
 #include "qemu-file-channel.h"
-#include "migration/migration.h"
+#include "migration.h"
 #include "qemu-file.h"
 #include "savevm.h"
 #include "migration/colo.h"
@@ -22,7 +21,6 @@
 #include "io/channel-buffer.h"
 #include "trace.h"
 #include "qemu/error-report.h"
-#include "qapi/error.h"
 #include "migration/failover.h"
 #include "replication.h"
 #include "qmp-commands.h"
@@ -30,11 +28,6 @@
 static bool vmstate_loading;
 
 #define COLO_BUFFER_BASE_SIZE (4 * 1024 * 1024)
-
-bool colo_supported(void)
-{
-    return true;
-}
 
 bool migration_in_colo_state(void)
 {
@@ -352,9 +345,9 @@ static int colo_do_checkpoint_transaction(MigrationState *s,
     /* Disable block migration */
     migrate_set_block_enabled(false, &local_err);
     qemu_savevm_state_header(fb);
-    qemu_savevm_state_begin(fb);
+    qemu_savevm_state_setup(fb);
     qemu_mutex_lock_iothread();
-    qemu_savevm_state_complete_precopy(fb, false);
+    qemu_savevm_state_complete_precopy(fb, false, false);
     qemu_mutex_unlock_iothread();
 
     qemu_fflush(fb);

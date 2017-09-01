@@ -107,6 +107,7 @@ static void test_visitor_in_int(TestInputVisitorData *data,
                                 const void *unused)
 {
     int64_t res = 0;
+    double dbl;
     int value = -42;
     Visitor *v;
 
@@ -114,13 +115,17 @@ static void test_visitor_in_int(TestInputVisitorData *data,
 
     visit_type_int(v, NULL, &res, &error_abort);
     g_assert_cmpint(res, ==, value);
+
+    visit_type_number(v, NULL, &dbl, &error_abort);
+    g_assert_cmpfloat(dbl, ==, -42.0);
 }
 
 static void test_visitor_in_uint(TestInputVisitorData *data,
                                 const void *unused)
 {
-    Error *err = NULL;
     uint64_t res = 0;
+    int64_t i64;
+    double dbl;
     int value = 42;
     Visitor *v;
 
@@ -129,19 +134,25 @@ static void test_visitor_in_uint(TestInputVisitorData *data,
     visit_type_uint64(v, NULL, &res, &error_abort);
     g_assert_cmpuint(res, ==, (uint64_t)value);
 
-    /* BUG: value between INT64_MIN and -1 accepted modulo 2^64 */
+    visit_type_int(v, NULL, &i64, &error_abort);
+    g_assert_cmpint(i64, ==, value);
 
+    visit_type_number(v, NULL, &dbl, &error_abort);
+    g_assert_cmpfloat(dbl, ==, value);
+
+    /* BUG: value between INT64_MIN and -1 accepted modulo 2^64 */
     v = visitor_input_test_init(data, "%d", -value);
 
     visit_type_uint64(v, NULL, &res, &error_abort);
     g_assert_cmpuint(res, ==, (uint64_t)-value);
 
-    /* BUG: value between INT64_MAX+1 and UINT64_MAX rejected */
-
     v = visitor_input_test_init(data, "18446744073709551574");
 
-    visit_type_uint64(v, NULL, &res, &err);
-    error_free_or_abort(&err);
+    visit_type_uint64(v, NULL, &res, &error_abort);
+    g_assert_cmpuint(res, ==, 18446744073709551574U);
+
+    visit_type_number(v, NULL, &dbl, &error_abort);
+    g_assert_cmpfloat(dbl, ==, 18446744073709552000.0);
 }
 
 static void test_visitor_in_int_overflow(TestInputVisitorData *data,
@@ -151,9 +162,10 @@ static void test_visitor_in_int_overflow(TestInputVisitorData *data,
     Error *err = NULL;
     Visitor *v;
 
-    /* this will overflow a Qint/int64, so should be deserialized into
-     * a QFloat/double field instead, leading to an error if we pass it
-     * to visit_type_int. confirm this.
+    /*
+     * This will overflow a QNUM_I64, so should be deserialized into a
+     * QNUM_DOUBLE field instead, leading to an error if we pass it to
+     * visit_type_int().  Confirm this.
      */
     v = visitor_input_test_init(data, "%f", DBL_MAX);
 
@@ -258,6 +270,27 @@ static void test_visitor_in_number(TestInputVisitorData *data,
 
     visit_type_number(v, NULL, &res, &error_abort);
     g_assert_cmpfloat(res, ==, value);
+}
+
+static void test_visitor_in_large_number(TestInputVisitorData *data,
+                                         const void *unused)
+{
+    Error *err = NULL;
+    double res = 0;
+    int64_t i64;
+    uint64_t u64;
+    Visitor *v;
+
+    v = visitor_input_test_init(data, "-18446744073709551616"); /* -2^64 */
+
+    visit_type_number(v, NULL, &res, &error_abort);
+    g_assert_cmpfloat(res, ==, -18446744073709552e3);
+
+    visit_type_int(v, NULL, &i64, &err);
+    error_free_or_abort(&err);
+
+    visit_type_uint64(v, NULL, &u64, &err);
+    error_free_or_abort(&err);
 }
 
 static void test_visitor_in_number_keyval(TestInputVisitorData *data,
@@ -434,17 +467,19 @@ static void test_visitor_in_any(TestInputVisitorData *data,
 {
     QObject *res = NULL;
     Visitor *v;
-    QInt *qint;
+    QNum *qnum;
     QBool *qbool;
     QString *qstring;
     QDict *qdict;
     QObject *qobj;
+    int64_t val;
 
     v = visitor_input_test_init(data, "-42");
     visit_type_any(v, NULL, &res, &error_abort);
-    qint = qobject_to_qint(res);
-    g_assert(qint);
-    g_assert_cmpint(qint_get_int(qint), ==, -42);
+    qnum = qobject_to_qnum(res);
+    g_assert(qnum);
+    g_assert(qnum_get_try_int(qnum, &val));
+    g_assert_cmpint(val, ==, -42);
     qobject_decref(res);
 
     v = visitor_input_test_init(data, "{ 'integer': -42, 'boolean': true, 'string': 'foo' }");
@@ -453,9 +488,10 @@ static void test_visitor_in_any(TestInputVisitorData *data,
     g_assert(qdict && qdict_size(qdict) == 3);
     qobj = qdict_get(qdict, "integer");
     g_assert(qobj);
-    qint = qobject_to_qint(qobj);
-    g_assert(qint);
-    g_assert_cmpint(qint_get_int(qint), ==, -42);
+    qnum = qobject_to_qnum(qobj);
+    g_assert(qnum);
+    g_assert(qnum_get_try_int(qnum, &val));
+    g_assert_cmpint(val, ==, -42);
     qobj = qdict_get(qdict, "boolean");
     g_assert(qobj);
     qbool = qobject_to_qbool(qobj);
@@ -474,6 +510,7 @@ static void test_visitor_in_null(TestInputVisitorData *data,
 {
     Visitor *v;
     Error *err = NULL;
+    QNull *null;
     char *tmp;
 
     /*
@@ -488,12 +525,15 @@ static void test_visitor_in_null(TestInputVisitorData *data,
     v = visitor_input_test_init_full(data, false,
                                      "{ 'a': null, 'b': '' }");
     visit_start_struct(v, NULL, NULL, 0, &error_abort);
-    visit_type_null(v, "a", &error_abort);
-    visit_type_null(v, "b", &err);
+    visit_type_null(v, "a", &null, &error_abort);
+    g_assert(qobject_type(QOBJECT(null)) == QTYPE_QNULL);
+    QDECREF(null);
+    visit_type_null(v, "b", &null, &err);
     error_free_or_abort(&err);
+    g_assert(!null);
     visit_type_str(v, "c", &tmp, &err);
-    g_assert(!tmp);
     error_free_or_abort(&err);
+    g_assert(!tmp);
     visit_check_struct(v, &error_abort);
     visit_end_struct(v, NULL);
 }
@@ -527,13 +567,12 @@ static void test_visitor_in_alternate(TestInputVisitorData *data,
                                       const void *unused)
 {
     Visitor *v;
-    Error *err = NULL;
     UserDefAlternate *tmp;
     WrapAlternate *wrap;
 
     v = visitor_input_test_init(data, "42");
     visit_type_UserDefAlternate(v, NULL, &tmp, &error_abort);
-    g_assert_cmpint(tmp->type, ==, QTYPE_QINT);
+    g_assert_cmpint(tmp->type, ==, QTYPE_QNUM);
     g_assert_cmpint(tmp->u.i, ==, 42);
     qapi_free_UserDefAlternate(tmp);
 
@@ -541,6 +580,11 @@ static void test_visitor_in_alternate(TestInputVisitorData *data,
     visit_type_UserDefAlternate(v, NULL, &tmp, &error_abort);
     g_assert_cmpint(tmp->type, ==, QTYPE_QSTRING);
     g_assert_cmpint(tmp->u.e, ==, ENUM_ONE_VALUE1);
+    qapi_free_UserDefAlternate(tmp);
+
+    v = visitor_input_test_init(data, "null");
+    visit_type_UserDefAlternate(v, NULL, &tmp, &error_abort);
+    g_assert_cmpint(tmp->type, ==, QTYPE_QNULL);
     qapi_free_UserDefAlternate(tmp);
 
     v = visitor_input_test_init(data, "{'integer':1, 'string':'str', "
@@ -554,14 +598,9 @@ static void test_visitor_in_alternate(TestInputVisitorData *data,
     g_assert_cmpint(tmp->u.udfu.u.value1.has_a_b, ==, false);
     qapi_free_UserDefAlternate(tmp);
 
-    v = visitor_input_test_init(data, "false");
-    visit_type_UserDefAlternate(v, NULL, &tmp, &err);
-    error_free_or_abort(&err);
-    qapi_free_UserDefAlternate(tmp);
-
     v = visitor_input_test_init(data, "{ 'alt': 42 }");
     visit_type_WrapAlternate(v, NULL, &wrap, &error_abort);
-    g_assert_cmpint(wrap->alt->type, ==, QTYPE_QINT);
+    g_assert_cmpint(wrap->alt->type, ==, QTYPE_QNUM);
     g_assert_cmpint(wrap->alt->u.i, ==, 42);
     qapi_free_WrapAlternate(wrap);
 
@@ -592,8 +631,6 @@ static void test_visitor_in_alternate_number(TestInputVisitorData *data,
     AltEnumNum *aen;
     AltNumEnum *ans;
     AltEnumInt *asi;
-    AltIntNum *ain;
-    AltNumInt *ani;
 
     /* Parsing an int */
 
@@ -604,33 +641,21 @@ static void test_visitor_in_alternate_number(TestInputVisitorData *data,
 
     v = visitor_input_test_init(data, "42");
     visit_type_AltEnumNum(v, NULL, &aen, &error_abort);
-    g_assert_cmpint(aen->type, ==, QTYPE_QFLOAT);
+    g_assert_cmpint(aen->type, ==, QTYPE_QNUM);
     g_assert_cmpfloat(aen->u.n, ==, 42);
     qapi_free_AltEnumNum(aen);
 
     v = visitor_input_test_init(data, "42");
     visit_type_AltNumEnum(v, NULL, &ans, &error_abort);
-    g_assert_cmpint(ans->type, ==, QTYPE_QFLOAT);
+    g_assert_cmpint(ans->type, ==, QTYPE_QNUM);
     g_assert_cmpfloat(ans->u.n, ==, 42);
     qapi_free_AltNumEnum(ans);
 
     v = visitor_input_test_init(data, "42");
     visit_type_AltEnumInt(v, NULL, &asi, &error_abort);
-    g_assert_cmpint(asi->type, ==, QTYPE_QINT);
+    g_assert_cmpint(asi->type, ==, QTYPE_QNUM);
     g_assert_cmpint(asi->u.i, ==, 42);
     qapi_free_AltEnumInt(asi);
-
-    v = visitor_input_test_init(data, "42");
-    visit_type_AltIntNum(v, NULL, &ain, &error_abort);
-    g_assert_cmpint(ain->type, ==, QTYPE_QINT);
-    g_assert_cmpint(ain->u.i, ==, 42);
-    qapi_free_AltIntNum(ain);
-
-    v = visitor_input_test_init(data, "42");
-    visit_type_AltNumInt(v, NULL, &ani, &error_abort);
-    g_assert_cmpint(ani->type, ==, QTYPE_QINT);
-    g_assert_cmpint(ani->u.i, ==, 42);
-    qapi_free_AltNumInt(ani);
 
     /* Parsing a double */
 
@@ -641,13 +666,13 @@ static void test_visitor_in_alternate_number(TestInputVisitorData *data,
 
     v = visitor_input_test_init(data, "42.5");
     visit_type_AltEnumNum(v, NULL, &aen, &error_abort);
-    g_assert_cmpint(aen->type, ==, QTYPE_QFLOAT);
+    g_assert_cmpint(aen->type, ==, QTYPE_QNUM);
     g_assert_cmpfloat(aen->u.n, ==, 42.5);
     qapi_free_AltEnumNum(aen);
 
     v = visitor_input_test_init(data, "42.5");
     visit_type_AltNumEnum(v, NULL, &ans, &error_abort);
-    g_assert_cmpint(ans->type, ==, QTYPE_QFLOAT);
+    g_assert_cmpint(ans->type, ==, QTYPE_QNUM);
     g_assert_cmpfloat(ans->u.n, ==, 42.5);
     qapi_free_AltNumEnum(ans);
 
@@ -655,18 +680,6 @@ static void test_visitor_in_alternate_number(TestInputVisitorData *data,
     visit_type_AltEnumInt(v, NULL, &asi, &err);
     error_free_or_abort(&err);
     qapi_free_AltEnumInt(asi);
-
-    v = visitor_input_test_init(data, "42.5");
-    visit_type_AltIntNum(v, NULL, &ain, &error_abort);
-    g_assert_cmpint(ain->type, ==, QTYPE_QFLOAT);
-    g_assert_cmpfloat(ain->u.n, ==, 42.5);
-    qapi_free_AltIntNum(ain);
-
-    v = visitor_input_test_init(data, "42.5");
-    visit_type_AltNumInt(v, NULL, &ani, &error_abort);
-    g_assert_cmpint(ani->type, ==, QTYPE_QFLOAT);
-    g_assert_cmpfloat(ani->u.n, ==, 42.5);
-    qapi_free_AltNumInt(ani);
 }
 
 static void test_native_list_integer_helper(TestInputVisitorData *data,
@@ -1077,6 +1090,7 @@ static void test_visitor_in_fail_struct_missing(TestInputVisitorData *data,
     Error *err = NULL;
     Visitor *v;
     QObject *any;
+    QNull *null;
     GenericAlternate *alt;
     bool present;
     int en;
@@ -1092,7 +1106,7 @@ static void test_visitor_in_fail_struct_missing(TestInputVisitorData *data,
     error_free_or_abort(&err);
     visit_start_list(v, "list", NULL, 0, &err);
     error_free_or_abort(&err);
-    visit_start_alternate(v, "alternate", &alt, sizeof(*alt), false, &err);
+    visit_start_alternate(v, "alternate", &alt, sizeof(*alt), &err);
     error_free_or_abort(&err);
     visit_optional(v, "optional", &present);
     g_assert(!present);
@@ -1110,7 +1124,7 @@ static void test_visitor_in_fail_struct_missing(TestInputVisitorData *data,
     error_free_or_abort(&err);
     visit_type_any(v, "any", &any, &err);
     error_free_or_abort(&err);
-    visit_type_null(v, "null", &err);
+    visit_type_null(v, "null", &null, &err);
     error_free_or_abort(&err);
     visit_start_list(v, "sub", NULL, 0, &error_abort);
     visit_start_struct(v, NULL, NULL, 0, &error_abort);
@@ -1279,6 +1293,8 @@ int main(int argc, char **argv)
                            NULL, test_visitor_in_bool_str_fail);
     input_visitor_test_add("/visitor/input/number",
                            NULL, test_visitor_in_number);
+    input_visitor_test_add("/visitor/input/large_number",
+                           NULL, test_visitor_in_large_number);
     input_visitor_test_add("/visitor/input/number_keyval",
                            NULL, test_visitor_in_number_keyval);
     input_visitor_test_add("/visitor/input/number_str_keyval",

@@ -23,7 +23,8 @@
 #include "hw/sysbus.h"
 #include "qemu/error-report.h"
 #include "sysemu/sysemu.h"
-#include "sysemu/char.h"
+#include "chardev/char-fe.h"
+#include "chardev/char-serial.h"
 
 #include "hw/arm/exynos4210.h"
 
@@ -379,7 +380,7 @@ static void exynos4210_uart_write(void *opaque, hwaddr offset,
         break;
 
     case UTXH:
-        if (qemu_chr_fe_get_driver(&s->chr)) {
+        if (qemu_chr_fe_backend_connected(&s->chr)) {
             s->reg[I_(UTRSTAT)] &= ~(UTRSTAT_TRANSMITTER_EMPTY |
                     UTRSTAT_Tx_BUFFER_EMPTY);
             ch = (uint8_t)val;
@@ -644,7 +645,7 @@ static void exynos4210_uart_realize(DeviceState *dev, Error **errp)
 
     qemu_chr_fe_set_handlers(&s->chr, exynos4210_uart_can_receive,
                              exynos4210_uart_receive, exynos4210_uart_event,
-                             s, NULL, true);
+                             NULL, s, NULL, true);
 }
 
 static Property exynos4210_uart_properties[] = {

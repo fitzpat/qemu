@@ -28,7 +28,6 @@
 #include "vnc.h"
 #include "vnc-jobs.h"
 #include "trace.h"
-#include "hw/qdev.h"
 #include "sysemu/sysemu.h"
 #include "qemu/error-report.h"
 #include "qemu/sockets.h"
@@ -2625,8 +2624,8 @@ static int vnc_refresh_lossy_rect(VncDisplay *vd, int x, int y)
     int stx = x / VNC_STAT_RECT;
     int has_dirty = 0;
 
-    y = y / VNC_STAT_RECT * VNC_STAT_RECT;
-    x = x / VNC_STAT_RECT * VNC_STAT_RECT;
+    y = QEMU_ALIGN_DOWN(y, VNC_STAT_RECT);
+    x = QEMU_ALIGN_DOWN(x, VNC_STAT_RECT);
 
     QTAILQ_FOREACH(vs, &vd->clients, next) {
         int j;
@@ -2715,8 +2714,8 @@ double vnc_update_freq(VncState *vs, int x, int y, int w, int h)
     double total = 0;
     int num = 0;
 
-    x =  (x / VNC_STAT_RECT) * VNC_STAT_RECT;
-    y =  (y / VNC_STAT_RECT) * VNC_STAT_RECT;
+    x =  QEMU_ALIGN_DOWN(x, VNC_STAT_RECT);
+    y =  QEMU_ALIGN_DOWN(y, VNC_STAT_RECT);
 
     for (j = y; j <= y + h; j += VNC_STAT_RECT) {
         for (i = x; i <= x + w; i += VNC_STAT_RECT) {
@@ -2782,7 +2781,7 @@ static int vnc_refresh_server_surface(VncDisplay *vd)
             PIXMAN_FORMAT_BPP(pixman_image_get_format(vd->guest.fb));
         guest_row0 = (uint8_t *)pixman_image_get_data(vd->guest.fb);
         guest_stride = pixman_image_get_stride(vd->guest.fb);
-        guest_ll = pixman_image_get_width(vd->guest.fb) * ((guest_bpp + 7) / 8);
+        guest_ll = pixman_image_get_width(vd->guest.fb) * (DIV_ROUND_UP(guest_bpp, 8));
     }
     line_bytes = MIN(server_stride, guest_ll);
 
@@ -3522,6 +3521,20 @@ static int vnc_display_get_address(const char *addrstr,
     return ret;
 }
 
+static void vnc_free_addresses(SocketAddress ***retsaddr,
+                               size_t *retnsaddr)
+{
+    size_t i;
+
+    for (i = 0; i < *retnsaddr; i++) {
+        qapi_free_SocketAddress((*retsaddr)[i]);
+    }
+    g_free(*retsaddr);
+
+    *retsaddr = NULL;
+    *retnsaddr = 0;
+}
+
 static int vnc_display_get_addresses(QemuOpts *opts,
                                      bool reverse,
                                      SocketAddress ***retsaddr,
@@ -3539,7 +3552,6 @@ static int vnc_display_get_addresses(QemuOpts *opts,
     bool has_ipv6 = qemu_opt_get(opts, "ipv6");
     bool ipv4 = qemu_opt_get_bool(opts, "ipv4", false);
     bool ipv6 = qemu_opt_get_bool(opts, "ipv6", false);
-    size_t i;
     int displaynum = -1;
     int ret = -1;
 
@@ -3615,16 +3627,8 @@ static int vnc_display_get_addresses(QemuOpts *opts,
     ret = 0;
  cleanup:
     if (ret < 0) {
-        for (i = 0; i < *retnsaddr; i++) {
-            qapi_free_SocketAddress((*retsaddr)[i]);
-        }
-        g_free(*retsaddr);
-        for (i = 0; i < *retnwsaddr; i++) {
-            qapi_free_SocketAddress((*retwsaddr)[i]);
-        }
-        g_free(*retwsaddr);
-        *retsaddr = *retwsaddr = NULL;
-        *retnsaddr = *retnwsaddr = 0;
+        vnc_free_addresses(retsaddr, retnsaddr);
+        vnc_free_addresses(retwsaddr, retnwsaddr);
     }
     return ret;
 }
@@ -3773,7 +3777,6 @@ void vnc_display_open(const char *id, Error **errp)
     int acl = 0;
     int lock_key_sync = 1;
     int key_delay_ms;
-    size_t i;
 
     if (!vd) {
         error_setg(errp, "VNC display not active");
@@ -3809,7 +3812,7 @@ void vnc_display_open(const char *id, Error **errp)
     }
 
     lock_key_sync = qemu_opt_get_bool(opts, "lock-key-sync", true);
-    key_delay_ms = qemu_opt_get_number(opts, "key-delay-ms", 1);
+    key_delay_ms = qemu_opt_get_number(opts, "key-delay-ms", 10);
     sasl = qemu_opt_get_bool(opts, "sasl", false);
 #ifndef CONFIG_VNC_SASL
     if (sasl) {
@@ -3994,12 +3997,8 @@ void vnc_display_open(const char *id, Error **errp)
     }
 
  cleanup:
-    for (i = 0; i < nsaddr; i++) {
-        qapi_free_SocketAddress(saddr[i]);
-    }
-    for (i = 0; i < nwsaddr; i++) {
-        qapi_free_SocketAddress(wsaddr[i]);
-    }
+    vnc_free_addresses(&saddr, &nsaddr);
+    vnc_free_addresses(&wsaddr, &nwsaddr);
     return;
 
 fail:

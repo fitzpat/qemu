@@ -49,6 +49,8 @@
 # define PCI_DPRINTF(format, ...)       do { } while (0)
 #endif
 
+bool pci_available = true;
+
 static void pcibus_dev_print(Monitor *mon, DeviceState *dev, int indent);
 static char *pcibus_get_dev_path(DeviceState *dev);
 static char *pcibus_get_fw_dev_path(DeviceState *dev);
@@ -74,7 +76,7 @@ static const VMStateDescription vmstate_pcibus = {
     .version_id = 1,
     .minimum_version_id = 1,
     .fields = (VMStateField[]) {
-        VMSTATE_INT32_EQUAL(nirq, PCIBus),
+        VMSTATE_INT32_EQUAL(nirq, PCIBus, NULL),
         VMSTATE_VARRAY_INT32(irq_count, PCIBus,
                              nirq, 0, vmstate_info_int32,
                              int32_t),
@@ -2236,7 +2238,6 @@ static void pci_add_option_rom(PCIDevice *pdev, bool is_default_rom,
     }
     pdev->has_rom = true;
     memory_region_init_rom(&pdev->rom, OBJECT(pdev), name, size, &error_fatal);
-    vmstate_register_ram(&pdev->rom, &pdev->qdev);
     ptr = memory_region_get_ram_ptr(&pdev->rom);
     load_image(path, ptr);
     g_free(path);
@@ -2259,28 +2260,12 @@ static void pci_del_option_rom(PCIDevice *pdev)
 }
 
 /*
- * if offset = 0,
- * Find and reserve space and add capability to the linked list
- * in pci config space
+ * On success, pci_add_capability() returns a positive value
+ * that the offset of the pci capability.
+ * On failure, it sets an error and returns a negative error
+ * code.
  */
 int pci_add_capability(PCIDevice *pdev, uint8_t cap_id,
-                       uint8_t offset, uint8_t size)
-{
-    int ret;
-    Error *local_err = NULL;
-
-    ret = pci_add_capability2(pdev, cap_id, offset, size, &local_err);
-    if (local_err) {
-        assert(ret < 0);
-        error_report_err(local_err);
-    } else {
-        /* success implies a positive offset in config space */
-        assert(ret > 0);
-    }
-    return ret;
-}
-
-int pci_add_capability2(PCIDevice *pdev, uint8_t cap_id,
                        uint8_t offset, uint8_t size,
                        Error **errp)
 {

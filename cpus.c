@@ -557,7 +557,7 @@ void qemu_start_warp_timer(void)
     if (deadline < 0) {
         static bool notified;
         if (!icount_sleep && !notified) {
-            error_report("WARNING: icount sleep disabled and no active timers");
+            warn_report("icount sleep disabled and no active timers");
             notified = true;
         }
         return;
@@ -677,9 +677,9 @@ static void cpu_throttle_thread(CPUState *cpu, run_on_cpu_data opaque)
     sleeptime_ns = (long)(throttle_ratio * CPU_THROTTLE_TIMESLICE_NS);
 
     qemu_mutex_unlock_iothread();
-    atomic_set(&cpu->throttle_thread_scheduled, 0);
     g_usleep(sleeptime_ns / 1000); /* Convert ns to us for usleep call */
     qemu_mutex_lock_iothread();
+    atomic_set(&cpu->throttle_thread_scheduled, 0);
 }
 
 static void cpu_throttle_timer_tick(void *opaque)
@@ -918,6 +918,15 @@ void cpu_synchronize_all_post_init(void)
 
     CPU_FOREACH(cpu) {
         cpu_synchronize_post_init(cpu);
+    }
+}
+
+void cpu_synchronize_all_pre_loadvm(void)
+{
+    CPUState *cpu;
+
+    CPU_FOREACH(cpu) {
+        cpu_synchronize_pre_loadvm(cpu);
     }
 }
 

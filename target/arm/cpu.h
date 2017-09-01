@@ -305,8 +305,6 @@ typedef struct CPUARMState {
             uint64_t par_el[4];
         };
 
-        uint32_t c6_rgnr;
-
         uint32_t c9_insn; /* Cache lockdown registers.  */
         uint32_t c9_data;
         uint64_t c9_pmcr; /* performance monitor control register */
@@ -519,6 +517,7 @@ typedef struct CPUARMState {
         uint32_t *drbar;
         uint32_t *drsr;
         uint32_t *dracr;
+        uint32_t rnr;
     } pmsav7;
 
     void *nvic;
@@ -704,6 +703,11 @@ struct ARMCPU {
 
     ARMELChangeHook *el_change_hook;
     void *el_change_hook_opaque;
+
+    int32_t node_id; /* NUMA node this CPU belongs to */
+
+    /* Used to synchronize KVM and QEMU in-kernel device levels */
+    uint8_t device_irq_level;
 };
 
 static inline ARMCPU *arm_env_get_cpu(CPUARMState *env)

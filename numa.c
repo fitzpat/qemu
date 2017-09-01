@@ -216,7 +216,7 @@ static void parse_numa_node(MachineState *ms, NumaNodeOptions *node,
         }
 
         object_ref(o);
-        numa_info[nodenr].node_mem = object_property_get_int(o, "size", NULL);
+        numa_info[nodenr].node_mem = object_property_get_uint(o, "size", NULL);
         numa_info[nodenr].node_memdev = MEMORY_BACKEND(o);
     }
     numa_info[nodenr].present = true;
@@ -426,7 +426,6 @@ void numa_default_auto_assign_ram(MachineClass *mc, NodeInfo *nodes,
 void parse_numa_opts(MachineState *ms)
 {
     int i;
-    const CPUArchIdList *possible_cpus;
     MachineClass *mc = MACHINE_GET_CLASS(ms);
 
     if (qemu_opts_foreach(qemu_find_opts("numa"), parse_numa, ms, NULL)) {
@@ -484,31 +483,6 @@ void parse_numa_opts(MachineState *ms)
 
         numa_set_mem_ranges();
 
-        /* assign CPUs to nodes using board provided default mapping */
-        if (!mc->cpu_index_to_instance_props || !mc->possible_cpu_arch_ids) {
-            error_report("default CPUs to NUMA node mapping isn't supported");
-            exit(1);
-        }
-
-        possible_cpus = mc->possible_cpu_arch_ids(ms);
-        for (i = 0; i < possible_cpus->len; i++) {
-            if (possible_cpus->cpus[i].props.has_node_id) {
-                break;
-            }
-        }
-
-        /* no CPUs are assigned to NUMA nodes */
-        if (i == possible_cpus->len) {
-            for (i = 0; i < max_cpus; i++) {
-                CpuInstanceProperties props;
-                /* fetch default mapping from board and enable it */
-                props = mc->cpu_index_to_instance_props(ms, i);
-                props.has_node_id = true;
-
-                machine_set_cpu_numa_node(ms, &props, &error_fatal);
-            }
-        }
-
         /* QEMU needs at least all unique node pair distances to build
          * the whole NUMA distance table. QEMU treats the distance table
          * as symmetric by default, i.e. distance A->B == distance B->A.
@@ -533,6 +507,23 @@ void parse_numa_opts(MachineState *ms)
     }
 }
 
+void numa_cpu_pre_plug(const CPUArchId *slot, DeviceState *dev, Error **errp)
+{
+    int node_id = object_property_get_int(OBJECT(dev), "node-id", &error_abort);
+
+    if (node_id == CPU_UNSET_NUMA_NODE_ID) {
+        /* due to bug in libvirt, it doesn't pass node-id from props on
+         * device_add as expected, so we have to fix it up here */
+        if (slot->props.has_node_id) {
+            object_property_set_int(OBJECT(dev), slot->props.node_id,
+                                    "node-id", errp);
+        }
+    } else if (node_id != slot->props.node_id) {
+        error_setg(errp, "node-id=%d must match numa node specified "
+                   "with -numa option", node_id);
+    }
+}
+
 static void allocate_system_memory_nonnuma(MemoryRegion *mr, Object *owner,
                                            const char *name,
                                            uint64_t ram_size)
@@ -551,14 +542,14 @@ static void allocate_system_memory_nonnuma(MemoryRegion *mr, Object *owner,
             /* Legacy behavior: if allocation failed, fall back to
              * regular RAM allocation.
              */
-            memory_region_init_ram(mr, owner, name, ram_size, &error_fatal);
+            memory_region_init_ram_nomigrate(mr, owner, name, ram_size, &error_fatal);
         }
 #else
         fprintf(stderr, "-mem-path not supported on this host\n");
         exit(1);
 #endif
     } else {
-        memory_region_init_ram(mr, owner, name, ram_size, &error_fatal);
+        memory_region_init_ram_nomigrate(mr, owner, name, ram_size, &error_fatal);
     }
     vmstate_register_ram_global(mr);
 }
@@ -650,8 +641,8 @@ static int query_memdev(Object *obj, void *opaque)
         m->value->id = object_property_get_str(obj, "id", NULL);
         m->value->has_id = !!m->value->id;
 
-        m->value->size = object_property_get_int(obj, "size",
-                                                 &error_abort);
+        m->value->size = object_property_get_uint(obj, "size",
+                                                  &error_abort);
         m->value->merge = object_property_get_bool(obj, "merge",
                                                    &error_abort);
         m->value->dump = object_property_get_bool(obj, "dump",

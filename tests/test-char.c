@@ -4,7 +4,7 @@
 #include "qemu-common.h"
 #include "qemu/config-file.h"
 #include "qemu/sockets.h"
-#include "sysemu/char.h"
+#include "chardev/char-fe.h"
 #include "sysemu/sysemu.h"
 #include "qapi/error.h"
 #include "qom/qom-qobject.h"
@@ -20,13 +20,9 @@ typedef struct FeHandler {
 
 static void main_loop(void)
 {
-    bool nonblocking;
-    int last_io = 0;
-
     quit = false;
     do {
-        nonblocking = last_io > 0;
-        last_io = main_loop_wait(nonblocking);
+        main_loop_wait(false);
     } while (!quit);
 }
 
@@ -53,7 +49,9 @@ static void fe_event(void *opaque, int event)
     FeHandler *h = opaque;
 
     h->last_event = event;
-    quit = true;
+    if (event != CHR_EVENT_BREAK) {
+        quit = true;
+    }
 }
 
 #ifdef CONFIG_HAS_GLIB_SUBPROCESS_TESTS
@@ -97,8 +95,7 @@ static void char_stdio_test_subprocess(void)
     ret = qemu_chr_fe_write(&be, (void *)"buf", 4);
     g_assert_cmpint(ret, ==, 4);
 
-    qemu_chr_fe_deinit(&be);
-    object_unparent(OBJECT(chr));
+    qemu_chr_fe_deinit(&be, true);
 }
 
 static void char_stdio_test(void)
@@ -146,8 +143,7 @@ static void char_ringbuf_test(void)
     g_assert_cmpstr(data, ==, "");
     g_free(data);
 
-    qemu_chr_fe_deinit(&be);
-    object_unparent(OBJECT(chr));
+    qemu_chr_fe_deinit(&be, true);
 
     /* check alias */
     opts = qemu_opts_create(qemu_find_opts("chardev"), "memory-label",
@@ -182,6 +178,7 @@ static void char_mux_test(void)
                              fe_can_read,
                              fe_read,
                              fe_event,
+                             NULL,
                              &h1,
                              NULL, true);
 
@@ -190,6 +187,7 @@ static void char_mux_test(void)
                              fe_can_read,
                              fe_read,
                              fe_event,
+                             NULL,
                              &h2,
                              NULL, true);
     qemu_chr_fe_take_focus(&chr_be2);
@@ -213,7 +211,8 @@ static void char_mux_test(void)
     h1.read_count = 0;
 
     /* remove first handler */
-    qemu_chr_fe_set_handlers(&chr_be1, NULL, NULL, NULL, NULL, NULL, true);
+    qemu_chr_fe_set_handlers(&chr_be1, NULL, NULL, NULL, NULL,
+                             NULL, NULL, true);
     qemu_chr_be_write(base, (void *)"hello", 6);
     g_assert_cmpint(h1.read_count, ==, 0);
     g_assert_cmpint(h2.read_count, ==, 0);
@@ -231,9 +230,8 @@ static void char_mux_test(void)
     g_assert_cmpint(strlen(data), !=, 0);
     g_free(data);
 
-    qemu_chr_fe_deinit(&chr_be1);
-    qemu_chr_fe_deinit(&chr_be2);
-    object_unparent(OBJECT(chr));
+    qemu_chr_fe_deinit(&chr_be1, false);
+    qemu_chr_fe_deinit(&chr_be2, true);
 }
 
 typedef struct SocketIdleData {
@@ -312,13 +310,13 @@ static void char_socket_test(void)
 
     qemu_chr_fe_init(&be, chr, &error_abort);
     qemu_chr_fe_set_handlers(&be, socket_can_read, socket_read,
-                             NULL, &d, NULL, true);
+                             NULL, NULL, &d, NULL, true);
 
     chr_client = qemu_chr_new("client", tmp);
     qemu_chr_fe_init(&client_be, chr_client, &error_abort);
     qemu_chr_fe_set_handlers(&client_be, socket_can_read_hello,
                              socket_read_hello,
-                             NULL, &d, NULL, true);
+                             NULL, NULL, &d, NULL, true);
     g_free(tmp);
 
     d.conn_expected = true;
@@ -388,6 +386,7 @@ static void char_pipe_test(void)
                              fe_can_read,
                              fe_read,
                              fe_event,
+                             NULL,
                              &fe,
                              NULL, true);
 
@@ -396,8 +395,7 @@ static void char_pipe_test(void)
     g_assert_cmpint(fe.read_count, ==, 8);
     g_assert_cmpstr(fe.read_buf, ==, "pipe-in");
 
-    qemu_chr_fe_deinit(&be);
-    object_unparent(OBJECT(chr));
+    qemu_chr_fe_deinit(&be, true);
 
     g_assert(g_unlink(in) == 0);
     g_assert(g_unlink(out) == 0);
@@ -409,16 +407,11 @@ static void char_pipe_test(void)
 }
 #endif
 
-static void char_udp_test(void)
+static int make_udp_socket(int *port)
 {
-    struct sockaddr_in addr = { 0, }, other;
-    SocketIdleData d = { 0, };
-    Chardev *chr;
-    CharBackend be;
+    struct sockaddr_in addr = { 0, };
     socklen_t alen = sizeof(addr);
     int ret, sock = qemu_socket(PF_INET, SOCK_DGRAM, 0);
-    char buf[10];
-    char *tmp;
 
     g_assert_cmpint(sock, >, 0);
     addr.sin_family = AF_INET ;
@@ -429,19 +422,41 @@ static void char_udp_test(void)
     ret = getsockname(sock, (struct sockaddr *)&addr, &alen);
     g_assert_cmpint(ret, ==, 0);
 
-    tmp = g_strdup_printf("udp:127.0.0.1:%d",
-                          ntohs(addr.sin_port));
-    chr = qemu_chr_new("client", tmp);
-    g_assert_nonnull(chr);
+    *port = ntohs(addr.sin_port);
+    return sock;
+}
+
+static void char_udp_test_internal(Chardev *reuse_chr, int sock)
+{
+    struct sockaddr_in other;
+    SocketIdleData d = { 0, };
+    Chardev *chr;
+    CharBackend *be;
+    socklen_t alen = sizeof(other);
+    int ret;
+    char buf[10];
+    char *tmp = NULL;
+
+    if (reuse_chr) {
+        chr = reuse_chr;
+        be = chr->be;
+    } else {
+        int port;
+        sock = make_udp_socket(&port);
+        tmp = g_strdup_printf("udp:127.0.0.1:%d", port);
+        chr = qemu_chr_new("client", tmp);
+        g_assert_nonnull(chr);
+
+        be = g_alloca(sizeof(CharBackend));
+        qemu_chr_fe_init(be, chr, &error_abort);
+    }
 
     d.chr = chr;
-    qemu_chr_fe_init(&be, chr, &error_abort);
-    qemu_chr_fe_set_handlers(&be, socket_can_read_hello, socket_read_hello,
-                             NULL, &d, NULL, true);
+    qemu_chr_fe_set_handlers(be, socket_can_read_hello, socket_read_hello,
+                             NULL, NULL, &d, NULL, true);
     ret = qemu_chr_write_all(chr, (uint8_t *)"hello", 5);
     g_assert_cmpint(ret, ==, 5);
 
-    alen = sizeof(addr);
     ret = recvfrom(sock, buf, sizeof(buf), 0,
                    (struct sockaddr *)&other, &alen);
     g_assert_cmpint(ret, ==, 5);
@@ -450,78 +465,146 @@ static void char_udp_test(void)
 
     main_loop();
 
-    close(sock);
+    if (!reuse_chr) {
+        close(sock);
+        qemu_chr_fe_deinit(be, true);
+    }
     g_free(tmp);
 }
 
-static void char_file_test(void)
+static void char_udp_test(void)
 {
+    char_udp_test_internal(NULL, 0);
+}
+
+#ifdef HAVE_CHARDEV_SERIAL
+static void char_serial_test(void)
+{
+    QemuOpts *opts;
+    Chardev *chr;
+
+    opts = qemu_opts_create(qemu_find_opts("chardev"), "serial-id",
+                            1, &error_abort);
+    qemu_opt_set(opts, "backend", "serial", &error_abort);
+    qemu_opt_set(opts, "path", "/dev/null", &error_abort);
+
+    chr = qemu_chr_new_from_opts(opts, NULL);
+    g_assert_nonnull(chr);
+    /* TODO: add more tests with a pty */
+    object_unparent(OBJECT(chr));
+
+    /* test tty alias */
+    qemu_opt_set(opts, "backend", "tty", &error_abort);
+    chr = qemu_chr_new_from_opts(opts, NULL);
+    g_assert_nonnull(chr);
+    object_unparent(OBJECT(chr));
+
+    qemu_opts_del(opts);
+}
+#endif
+
+#ifndef _WIN32
+static void char_file_fifo_test(void)
+{
+    Chardev *chr;
+    CharBackend be;
     char *tmp_path = g_dir_make_tmp("qemu-test-char.XXXXXX", NULL);
+    char *fifo = g_build_filename(tmp_path, "fifo", NULL);
     char *out = g_build_filename(tmp_path, "out", NULL);
-    char *contents = NULL;
-    ChardevFile file = { .out = out };
+    ChardevFile file = { .in = fifo,
+                         .has_in = true,
+                         .out = out };
     ChardevBackend backend = { .type = CHARDEV_BACKEND_KIND_FILE,
                                .u.file.data = &file };
+    FeHandler fe = { 0, };
+    int fd, ret;
+
+    if (mkfifo(fifo, 0600) < 0) {
+        abort();
+    }
+
+    fd = open(fifo, O_RDWR);
+    ret = write(fd, "fifo-in", 8);
+    g_assert_cmpint(ret, ==, 8);
+
+    chr = qemu_chardev_new("label-file", TYPE_CHARDEV_FILE, &backend,
+                           &error_abort);
+
+    qemu_chr_fe_init(&be, chr, &error_abort);
+    qemu_chr_fe_set_handlers(&be,
+                             fe_can_read,
+                             fe_read,
+                             fe_event,
+                             NULL,
+                             &fe, NULL, true);
+
+    g_assert_cmpint(fe.last_event, !=, CHR_EVENT_BREAK);
+    qmp_chardev_send_break("label-foo", NULL);
+    g_assert_cmpint(fe.last_event, !=, CHR_EVENT_BREAK);
+    qmp_chardev_send_break("label-file", NULL);
+    g_assert_cmpint(fe.last_event, ==, CHR_EVENT_BREAK);
+
+    main_loop();
+
+    close(fd);
+
+    g_assert_cmpint(fe.read_count, ==, 8);
+    g_assert_cmpstr(fe.read_buf, ==, "fifo-in");
+
+    qemu_chr_fe_deinit(&be, true);
+
+    g_unlink(fifo);
+    g_free(fifo);
+    g_unlink(out);
+    g_free(out);
+    g_rmdir(tmp_path);
+    g_free(tmp_path);
+}
+#endif
+
+static void char_file_test_internal(Chardev *ext_chr, const char *filepath)
+{
+    char *tmp_path = g_dir_make_tmp("qemu-test-char.XXXXXX", NULL);
+    char *out;
     Chardev *chr;
+    char *contents = NULL;
+    ChardevFile file = {};
+    ChardevBackend backend = { .type = CHARDEV_BACKEND_KIND_FILE,
+                               .u.file.data = &file };
     gsize length;
     int ret;
 
-    chr = qemu_chardev_new(NULL, TYPE_CHARDEV_FILE, &backend,
-                           &error_abort);
+    if (ext_chr) {
+        chr = ext_chr;
+        out = g_strdup(filepath);
+        file.out = out;
+    } else {
+        out = g_build_filename(tmp_path, "out", NULL);
+        file.out = out;
+        chr = qemu_chardev_new(NULL, TYPE_CHARDEV_FILE, &backend,
+                               &error_abort);
+    }
     ret = qemu_chr_write_all(chr, (uint8_t *)"hello!", 6);
     g_assert_cmpint(ret, ==, 6);
-    object_unref(OBJECT(chr));
 
     ret = g_file_get_contents(out, &contents, &length, NULL);
     g_assert(ret == TRUE);
     g_assert_cmpint(length, ==, 6);
     g_assert(strncmp(contents, "hello!", 6) == 0);
-    g_free(contents);
 
-#ifndef _WIN32
-    {
-        CharBackend be;
-        FeHandler fe = { 0, };
-        char *fifo = g_build_filename(tmp_path, "fifo", NULL);
-        int fd;
-
-        if (mkfifo(fifo, 0600) < 0) {
-            abort();
-        }
-
-        fd = open(fifo, O_RDWR);
-        ret = write(fd, "fifo-in", 8);
-        g_assert_cmpint(ret, ==, 8);
-
-        file.in = fifo;
-        file.has_in = true;
-        chr = qemu_chardev_new(NULL, TYPE_CHARDEV_FILE, &backend,
-                               &error_abort);
-
-        qemu_chr_fe_init(&be, chr, &error_abort);
-        qemu_chr_fe_set_handlers(&be,
-                                 fe_can_read,
-                                 fe_read,
-                                 fe_event,
-                                 &fe, NULL, true);
-
-        main_loop();
-
-        close(fd);
-
-        g_assert_cmpint(fe.read_count, ==, 8);
-        g_assert_cmpstr(fe.read_buf, ==, "fifo-in");
-        qemu_chr_fe_deinit(&be);
+    if (!ext_chr) {
         object_unref(OBJECT(chr));
-        g_unlink(fifo);
-        g_free(fifo);
+        g_unlink(out);
     }
-#endif
-
-    g_unlink(out);
+    g_free(contents);
     g_rmdir(tmp_path);
     g_free(tmp_path);
     g_free(out);
+}
+
+static void char_file_test(void)
+{
+    char_file_test_internal(NULL, NULL);
 }
 
 static void char_null_test(void)
@@ -549,7 +632,7 @@ static void char_null_test(void)
     error_free_or_abort(&err);
 
     /* deinit & reinit */
-    qemu_chr_fe_deinit(&be);
+    qemu_chr_fe_deinit(&be, false);
     qemu_chr_fe_init(&be, chr, &error_abort);
 
     qemu_chr_fe_set_open(&be, true);
@@ -558,13 +641,13 @@ static void char_null_test(void)
                              fe_can_read,
                              fe_read,
                              fe_event,
+                             NULL,
                              NULL, NULL, true);
 
     ret = qemu_chr_fe_write(&be, (void *)"buf", 4);
     g_assert_cmpint(ret, ==, 4);
 
-    qemu_chr_fe_deinit(&be);
-    object_unparent(OBJECT(chr));
+    qemu_chr_fe_deinit(&be, true);
 }
 
 static void char_invalid_test(void)
@@ -573,6 +656,76 @@ static void char_invalid_test(void)
 
     chr = qemu_chr_new("label-invalid", "invalid");
     g_assert_null(chr);
+}
+
+static int chardev_change(void *opaque)
+{
+    return 0;
+}
+
+static int chardev_change_denied(void *opaque)
+{
+    return -1;
+}
+
+static void char_hotswap_test(void)
+{
+    char *chr_args;
+    Chardev *chr;
+    CharBackend be;
+
+    gchar *tmp_path = g_dir_make_tmp("qemu-test-char.XXXXXX", NULL);
+    char *filename = g_build_filename(tmp_path, "file", NULL);
+    ChardevFile file = { .out = filename };
+    ChardevBackend backend = { .type = CHARDEV_BACKEND_KIND_FILE,
+                               .u.file.data = &file };
+    ChardevReturn *ret;
+
+    int port;
+    int sock = make_udp_socket(&port);
+    g_assert_cmpint(sock, >, 0);
+
+    chr_args = g_strdup_printf("udp:127.0.0.1:%d", port);
+
+    chr = qemu_chr_new("chardev", chr_args);
+    qemu_chr_fe_init(&be, chr, &error_abort);
+
+    /* check that chardev operates correctly */
+    char_udp_test_internal(chr, sock);
+
+    /* set the handler that denies the hotswap */
+    qemu_chr_fe_set_handlers(&be, NULL, NULL,
+                             NULL, chardev_change_denied, NULL, NULL, true);
+
+    /* now, change is denied and has to keep the old backend operating */
+    ret = qmp_chardev_change("chardev", &backend, NULL);
+    g_assert(!ret);
+    g_assert(be.chr == chr);
+
+    char_udp_test_internal(chr, sock);
+
+    /* now allow the change */
+    qemu_chr_fe_set_handlers(&be, NULL, NULL,
+                             NULL, chardev_change, NULL, NULL, true);
+
+    /* has to succeed now */
+    ret = qmp_chardev_change("chardev", &backend, &error_abort);
+    g_assert(be.chr != chr);
+
+    close(sock);
+    chr = be.chr;
+
+    /* run the file chardev test */
+    char_file_test_internal(chr, filename);
+
+    object_unparent(OBJECT(chr));
+
+    qapi_free_ChardevReturn(ret);
+    g_unlink(filename);
+    g_free(filename);
+    g_rmdir(tmp_path);
+    g_free(tmp_path);
+    g_free(chr_args);
 }
 
 int main(int argc, char **argv)
@@ -601,8 +754,15 @@ int main(int argc, char **argv)
     g_test_add_func("/char/pipe", char_pipe_test);
 #endif
     g_test_add_func("/char/file", char_file_test);
+#ifndef _WIN32
+    g_test_add_func("/char/file-fifo", char_file_fifo_test);
+#endif
     g_test_add_func("/char/socket", char_socket_test);
     g_test_add_func("/char/udp", char_udp_test);
+#ifdef HAVE_CHARDEV_SERIAL
+    g_test_add_func("/char/serial", char_serial_test);
+#endif
+    g_test_add_func("/char/hotswap", char_hotswap_test);
 
     return g_test_run();
 }

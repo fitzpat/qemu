@@ -1,7 +1,9 @@
 atomic_add-bench
+benchmark-crypto-cipher
+benchmark-crypto-hash
+benchmark-crypto-hmac
 check-qdict
-check-qfloat
-check-qint
+check-qnum
 check-qjson
 check-qlist
 check-qnull

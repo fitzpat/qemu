@@ -232,6 +232,20 @@ static void arm_cpu_reset(CPUState *s)
 
     env->vfp.xregs[ARM_VFP_FPEXC] = 0;
 #endif
+
+    if (arm_feature(env, ARM_FEATURE_PMSA) &&
+        arm_feature(env, ARM_FEATURE_V7)) {
+        if (cpu->pmsav7_dregion > 0) {
+            memset(env->pmsav7.drbar, 0,
+                   sizeof(*env->pmsav7.drbar) * cpu->pmsav7_dregion);
+            memset(env->pmsav7.drsr, 0,
+                   sizeof(*env->pmsav7.drsr) * cpu->pmsav7_dregion);
+            memset(env->pmsav7.dracr, 0,
+                   sizeof(*env->pmsav7.dracr) * cpu->pmsav7_dregion);
+        }
+        env->pmsav7.rnr = 0;
+    }
+
     set_flush_to_zero(1, &env->vfp.standard_fp_status);
     set_flush_inputs_to_zero(1, &env->vfp.standard_fp_status);
     set_default_nan_mode(1, &env->vfp.standard_fp_status);
@@ -543,8 +557,15 @@ static Property arm_cpu_has_pmu_property =
 static Property arm_cpu_has_mpu_property =
             DEFINE_PROP_BOOL("has-mpu", ARMCPU, has_mpu, true);
 
+/* This is like DEFINE_PROP_UINT32 but it doesn't set the default value,
+ * because the CPU initfn will have already set cpu->pmsav7_dregion to
+ * the right value for that particular CPU type, and we don't want
+ * to override that with an incorrect constant value.
+ */
 static Property arm_cpu_pmsav7_dregion_property =
-            DEFINE_PROP_UINT32("pmsav7-dregion", ARMCPU, pmsav7_dregion, 16);
+            DEFINE_PROP_UNSIGNED_NODEFAULT("pmsav7-dregion", ARMCPU,
+                                           pmsav7_dregion,
+                                           qdev_prop_uint32, uint32_t);
 
 static void arm_cpu_post_init(Object *obj)
 {
@@ -1054,6 +1075,7 @@ static void cortex_m3_initfn(Object *obj)
     set_feature(&cpu->env, ARM_FEATURE_V7);
     set_feature(&cpu->env, ARM_FEATURE_M);
     cpu->midr = 0x410fc231;
+    cpu->pmsav7_dregion = 8;
 }
 
 static void cortex_m4_initfn(Object *obj)
@@ -1064,6 +1086,7 @@ static void cortex_m4_initfn(Object *obj)
     set_feature(&cpu->env, ARM_FEATURE_M);
     set_feature(&cpu->env, ARM_FEATURE_THUMB_DSP);
     cpu->midr = 0x410fc240; /* r0p0 */
+    cpu->pmsav7_dregion = 8;
 }
 static void arm_v7m_class_init(ObjectClass *oc, void *data)
 {
@@ -1082,6 +1105,8 @@ static const ARMCPRegInfo cortexr5_cp_reginfo[] = {
       .access = PL1_RW, .type = ARM_CP_CONST },
     { .name = "BTCM", .cp = 15, .opc1 = 0, .crn = 9, .crm = 1, .opc2 = 1,
       .access = PL1_RW, .type = ARM_CP_CONST },
+    { .name = "DCACHE_INVAL", .cp = 15, .opc1 = 0, .crn = 15, .crm = 5,
+      .opc2 = 0, .access = PL1_W, .type = ARM_CP_NOP },
     REGINFO_SENTINEL
 };
 
@@ -1110,6 +1135,7 @@ static void cortex_r5_initfn(Object *obj)
     cpu->id_isar4 = 0x0010142;
     cpu->id_isar5 = 0x0;
     cpu->mp_is_up = true;
+    cpu->pmsav7_dregion = 16;
     define_arm_cp_regs(cpu, cortexr5_cp_reginfo);
 }
 
@@ -1587,7 +1613,7 @@ static Property arm_cpu_properties[] = {
     DEFINE_PROP_UINT32("midr", ARMCPU, midr, 0),
     DEFINE_PROP_UINT64("mp-affinity", ARMCPU,
                         mp_affinity, ARM64_AFFINITY_INVALID),
-    DEFINE_PROP_INT32("node-id", CPUState, numa_node, CPU_UNSET_NUMA_NODE_ID),
+    DEFINE_PROP_INT32("node-id", ARMCPU, node_id, CPU_UNSET_NUMA_NODE_ID),
     DEFINE_PROP_END_OF_LIST()
 };
 

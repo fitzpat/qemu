@@ -30,7 +30,7 @@
 #include "hw/arm/omap.h"
 #include "sysemu/sysemu.h"
 #include "qemu/timer.h"
-#include "sysemu/char.h"
+#include "chardev/char-fe.h"
 #include "hw/block/flash.h"
 #include "hw/arm/soc_dma.h"
 #include "hw/sysbus.h"
@@ -2280,7 +2280,6 @@ struct omap_mpu_state_s *omap2420_mpu_init(MemoryRegion *sysmem,
     memory_region_add_subregion(sysmem, OMAP2_Q2_BASE, &s->sdram);
     memory_region_init_ram(&s->sram, NULL, "omap2.sram", s->sram_size,
                            &error_fatal);
-    vmstate_register_ram_global(&s->sram);
     memory_region_add_subregion(sysmem, OMAP2_SRAM_BASE, &s->sram);
 
     s->l4 = omap_l4_init(sysmem, OMAP2_L4_BASE, 54);

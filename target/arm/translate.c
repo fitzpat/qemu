@@ -343,11 +343,13 @@ static void gen_smul_dual(TCGv_i32 a, TCGv_i32 b)
 static void gen_rev16(TCGv_i32 var)
 {
     TCGv_i32 tmp = tcg_temp_new_i32();
+    TCGv_i32 mask = tcg_const_i32(0x00ff00ff);
     tcg_gen_shri_i32(tmp, var, 8);
-    tcg_gen_andi_i32(tmp, tmp, 0x00ff00ff);
+    tcg_gen_and_i32(tmp, tmp, mask);
+    tcg_gen_and_i32(var, var, mask);
     tcg_gen_shli_i32(var, var, 8);
-    tcg_gen_andi_i32(var, var, 0xff00ff00);
     tcg_gen_or_i32(var, var, tmp);
+    tcg_temp_free_i32(mask);
     tcg_temp_free_i32(tmp);
 }
 
@@ -1182,7 +1184,7 @@ static void gen_exception_internal_insn(DisasContext *s, int offset, int excp)
     gen_set_condexec(s);
     gen_set_pc_im(s, s->pc - offset);
     gen_exception_internal(excp);
-    s->is_jmp = DISAS_JUMP;
+    s->is_jmp = DISAS_EXC;
 }
 
 static void gen_exception_insn(DisasContext *s, int offset, int excp,
@@ -1191,14 +1193,14 @@ static void gen_exception_insn(DisasContext *s, int offset, int excp,
     gen_set_condexec(s);
     gen_set_pc_im(s, s->pc - offset);
     gen_exception(excp, syn, target_el);
-    s->is_jmp = DISAS_JUMP;
+    s->is_jmp = DISAS_EXC;
 }
 
 /* Force a TB lookup after an instruction that changes the CPU state.  */
 static inline void gen_lookup_tb(DisasContext *s)
 {
     tcg_gen_movi_i32(cpu_R[15], s->pc & ~1);
-    s->is_jmp = DISAS_JUMP;
+    s->is_jmp = DISAS_EXIT;
 }
 
 static inline void gen_hlt(DisasContext *s, int imm)
@@ -4150,7 +4152,19 @@ static inline bool use_goto_tb(DisasContext *s, target_ulong dest)
 #endif
 }
 
-static inline void gen_goto_tb(DisasContext *s, int n, target_ulong dest)
+static void gen_goto_ptr(void)
+{
+    TCGv addr = tcg_temp_new();
+    tcg_gen_extu_i32_tl(addr, cpu_R[15]);
+    tcg_gen_lookup_and_goto_ptr(addr);
+    tcg_temp_free(addr);
+}
+
+/* This will end the TB but doesn't guarantee we'll return to
+ * cpu_loop_exec. Any live exit_requests will be processed as we
+ * enter the next TB.
+ */
+static void gen_goto_tb(DisasContext *s, int n, target_ulong dest)
 {
     if (use_goto_tb(s, dest)) {
         tcg_gen_goto_tb(n);
@@ -4158,8 +4172,9 @@ static inline void gen_goto_tb(DisasContext *s, int n, target_ulong dest)
         tcg_gen_exit_tb((uintptr_t)s->tb + n);
     } else {
         gen_set_pc_im(s, dest);
-        tcg_gen_exit_tb(0);
+        gen_goto_ptr();
     }
+    s->is_jmp = DISAS_TB_JUMP;
 }
 
 static inline void gen_jmp (DisasContext *s, uint32_t dest)
@@ -4171,7 +4186,6 @@ static inline void gen_jmp (DisasContext *s, uint32_t dest)
         gen_bx_im(s, dest);
     } else {
         gen_goto_tb(s, 0, dest);
-        s->is_jmp = DISAS_TB_JUMP;
     }
 }
 
@@ -4467,7 +4481,8 @@ static void gen_rfe(DisasContext *s, TCGv_i32 pc, TCGv_i32 cpsr)
      */
     gen_helper_cpsr_write_eret(cpu_env, cpsr);
     tcg_temp_free_i32(cpsr);
-    s->is_jmp = DISAS_JUMP;
+    /* Must exit loop to check un-masked IRQs */
+    s->is_jmp = DISAS_EXIT;
 }
 
 /* Generate an old-style exception return. Marks pc as dead. */
@@ -8157,7 +8172,7 @@ static void disas_arm_insn(DisasContext *s, unsigned int insn)
                  * self-modifying code correctly and also to take
                  * any pending interrupts immediately.
                  */
-                gen_lookup_tb(s);
+                gen_goto_tb(s, 0, s->pc & ~1);
                 return;
             default:
                 goto illegal_op;
@@ -9511,7 +9526,8 @@ static void disas_arm_insn(DisasContext *s, unsigned int insn)
                     tmp = load_cpu_field(spsr);
                     gen_helper_cpsr_write_eret(cpu_env, tmp);
                     tcg_temp_free_i32(tmp);
-                    s->is_jmp = DISAS_JUMP;
+                    /* Must exit loop to check un-masked IRQs */
+                    s->is_jmp = DISAS_EXIT;
                 }
             }
             break;
@@ -10550,7 +10566,7 @@ static int disas_thumb2_insn(CPUARMState *env, DisasContext *s, uint16_t insn_hw
                              * and also to take any pending interrupts
                              * immediately.
                              */
-                            gen_lookup_tb(s);
+                            gen_goto_tb(s, 0, s->pc & ~1);
                             break;
                         default:
                             goto illegal_op;
@@ -11779,10 +11795,10 @@ static bool insn_crosses_page(CPUARMState *env, DisasContext *s)
 }
 
 /* generate intermediate code for basic block 'tb'.  */
-void gen_intermediate_code(CPUARMState *env, TranslationBlock *tb)
+void gen_intermediate_code(CPUState *cs, TranslationBlock *tb)
 {
+    CPUARMState *env = cs->env_ptr;
     ARMCPU *cpu = arm_env_get_cpu(env);
-    CPUState *cs = CPU(cpu);
     DisasContext dc1, *dc = &dc1;
     target_ulong pc_start;
     target_ulong next_page_start;
@@ -11796,7 +11812,7 @@ void gen_intermediate_code(CPUARMState *env, TranslationBlock *tb)
      * the A32/T32 complexity to do with conditional execution/IT blocks/etc.
      */
     if (ARM_TBFLAG_AARCH64_STATE(tb->flags)) {
-        gen_intermediate_code_a64(cpu, tb);
+        gen_intermediate_code_a64(cs, tb);
         return;
     }
 
@@ -12087,15 +12103,18 @@ void gen_intermediate_code(CPUARMState *env, TranslationBlock *tb)
         case DISAS_NEXT:
             gen_goto_tb(dc, 1, dc->pc);
             break;
+        case DISAS_JUMP:
+            gen_goto_ptr();
+            break;
         case DISAS_UPDATE:
             gen_set_pc_im(dc, dc->pc);
             /* fall through */
-        case DISAS_JUMP:
         default:
             /* indicate that the hash table must be used to find the next TB */
             tcg_gen_exit_tb(0);
             break;
         case DISAS_TB_JUMP:
+        case DISAS_EXC:
             /* nothing more to generate */
             break;
         case DISAS_WFI:

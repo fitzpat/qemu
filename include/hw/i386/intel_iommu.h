@@ -32,6 +32,8 @@
 #define INTEL_IOMMU_DEVICE(obj) \
      OBJECT_CHECK(IntelIOMMUState, (obj), TYPE_INTEL_IOMMU_DEVICE)
 
+#define TYPE_INTEL_IOMMU_MEMORY_REGION "intel-iommu-iommu-memory-region"
+
 /* DMAR Hardware Unit Definition address (IOMMU unit) */
 #define Q35_HOST_BRIDGE_IOMMU_ADDR  0xfed90000ULL
 
@@ -83,7 +85,7 @@ struct VTDAddressSpace {
     PCIBus *bus;
     uint8_t devfn;
     AddressSpace as;
-    MemoryRegion iommu;
+    IOMMUMemoryRegion iommu;
     MemoryRegion root;
     MemoryRegion sys_alias;
     MemoryRegion iommu_ir;      /* Interrupt region: 0xfeeXXXXX */
@@ -101,8 +103,7 @@ struct VTDIOTLBEntry {
     uint16_t domain_id;
     uint64_t slpte;
     uint64_t mask;
-    bool read_flags;
-    bool write_flags;
+    uint8_t access_flags;
 };
 
 /* VT-d Source-ID Qualifier types */
@@ -289,7 +290,6 @@ struct IntelIOMMUState {
     uint32_t context_cache_gen;     /* Should be in [1,MAX] */
     GHashTable *iotlb;              /* IOTLB */
 
-    MemoryRegionIOMMUOps iommu_ops;
     GHashTable *vtd_as_by_busptr;   /* VTDBus objects indexed by PCIBus* reference */
     VTDBus *vtd_as_by_bus_num[VTD_PCI_BUS_MAX]; /* VTDBus objects indexed by bus number */
     /* list of registered notifiers */

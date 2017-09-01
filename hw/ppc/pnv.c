@@ -160,13 +160,13 @@ static void powernv_create_core_node(PnvChip *chip, PnvCore *pc, void *fdt)
         _FDT((fdt_setprop_cell(fdt, offset, "d-cache-size",
                                pcc->l1_dcache_size)));
     } else {
-        error_report("Warning: Unknown L1 dcache size for cpu");
+        warn_report("Unknown L1 dcache size for cpu");
     }
     if (pcc->l1_icache_size) {
         _FDT((fdt_setprop_cell(fdt, offset, "i-cache-size",
                                pcc->l1_icache_size)));
     } else {
-        error_report("Warning: Unknown L1 icache size for cpu");
+        warn_report("Unknown L1 icache size for cpu");
     }
 
     _FDT((fdt_setprop_cell(fdt, offset, "timebase-frequency", tbfreq)));
@@ -378,8 +378,9 @@ static void powernv_populate_ipmi_bt(ISADevice *d, void *fdt, int lpc_off)
     _FDT(node);
     g_free(name);
 
-    fdt_setprop(fdt, node, "reg", io_regs, sizeof(io_regs));
-    fdt_setprop(fdt, node, "compatible", compatible, sizeof(compatible));
+    _FDT((fdt_setprop(fdt, node, "reg", io_regs, sizeof(io_regs))));
+    _FDT((fdt_setprop(fdt, node, "compatible", compatible,
+                      sizeof(compatible))));
 
     /* Mark it as reserved to avoid Linux trying to claim it */
     _FDT((fdt_setprop_string(fdt, node, "status", "reserved")));
@@ -555,7 +556,7 @@ static void ppc_powernv_init(MachineState *machine)
 
     /* allocate RAM */
     if (machine->ram_size < (1 * G_BYTE)) {
-        error_report("Warning: skiboot may not work with < 1GB of RAM");
+        warn_report("skiboot may not work with < 1GB of RAM");
     }
 
     ram = g_new(MemoryRegion, 1);
@@ -1110,7 +1111,7 @@ static void powernv_machine_initfn(Object *obj)
 
 static void powernv_machine_class_props_init(ObjectClass *oc)
 {
-    object_class_property_add(oc, "num-chips", "uint32_t",
+    object_class_property_add(oc, "num-chips", "uint32",
                               pnv_get_num_chips, pnv_set_num_chips,
                               NULL, NULL, NULL);
     object_class_property_set_description(oc, "num-chips",

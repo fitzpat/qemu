@@ -1,6 +1,9 @@
 #ifndef HW_COMPAT_H
 #define HW_COMPAT_H
 
+#define HW_COMPAT_2_10 \
+    /* empty */
+
 #define HW_COMPAT_2_9 \
     {\
         .driver   = "pci-bridge",\
@@ -14,6 +17,10 @@
         .driver   = "virtio-net-device",\
         .property = "x-mtu-bypass-backend",\
         .value    = "off",\
+    },{\
+        .driver   = "pcie-root-port",\
+        .property = "x-migrate-msix",\
+        .value    = "false",\
     },
 
 #define HW_COMPAT_2_8 \
@@ -176,6 +183,18 @@
     },{\
         .driver   = TYPE_PCI_DEVICE,\
         .property = "x-pcie-lnksta-dllla",\
+        .value    = "off",\
+    },{\
+        .driver   = "migration",\
+        .property = "send-configuration",\
+        .value    = "off",\
+    },{\
+        .driver   = "migration",\
+        .property = "send-section-footer",\
+        .value    = "off",\
+    },{\
+        .driver   = "migration",\
+        .property = "store-global-state",\
         .value    = "off",\
     },
 

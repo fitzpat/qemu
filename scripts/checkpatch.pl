@@ -1337,6 +1337,25 @@ sub process {
 			$rpt_cleaners = 1;
 		}
 
+# checks for trace-events files
+		if ($realfile =~ /trace-events$/ && $line =~ /^\+/) {
+			if ($rawline =~ /%[-+ 0]*#/) {
+				ERROR("Don't use '#' flag of printf format ('%#') in " .
+				      "trace-events, use '0x' prefix instead\n" . $herecurr);
+			} else {
+				my $hex =
+					qr/%[-+ *.0-9]*([hljztL]|ll|hh)?(x|X|"\s*PRI[xX][^"]*"?)/;
+
+				# don't consider groups splitted by [.:/ ], like 2A.20:12ab
+				my $tmpline = $rawline =~ s/($hex[.:\/ ])+$hex//gr;
+
+				if ($tmpline =~ /(?<!0x)$hex/) {
+					ERROR("Hex numbers must be prefixed with '0x'\n" .
+					      $herecurr);
+				}
+			}
+		}
+
 # check we are in a valid source file if not then ignore this hunk
 		next if ($realfile !~ /\.(h|c|cpp|s|S|pl|py|sh)$/);
 
@@ -2473,6 +2492,10 @@ sub process {
 		if ($line =~ /\b(strto[^kd].*?)\s*\(/) {
 			ERROR("consider using qemu_$1 in preference to $1\n" . $herecurr);
 		}
+# recommend sigaction over signal for portability, when establishing a handler
+		if ($line =~ /\bsignal\s*\(/ && !($line =~ /SIG_(?:IGN|DFL)/)) {
+			ERROR("use sigaction to establish signal handlers; signal is not portable\n" . $herecurr);
+		}
 # check for module_init(), use category-specific init macros explicitly please
 		if ($line =~ /^module_init\s*\(/) {
 			ERROR("please use block_init(), type_init() etc. instead of module_init()\n" . $herecurr);
@@ -2529,9 +2552,14 @@ sub process {
 				error_setg_file_open|
 				error_set|
 				error_prepend|
+				warn_reportf_err|
 				error_reportf_err|
 				error_vreport|
-				error_report}x;
+				warn_vreport|
+				info_vreport|
+				error_report|
+				warn_report|
+				info_report}x;
 
 	if ($rawline =~ /\b(?:$qemu_error_funcs)\s*\(.*\".*\\n/) {
 		ERROR("Error messages should not contain newlines\n" . $herecurr);

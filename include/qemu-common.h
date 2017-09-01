@@ -22,6 +22,11 @@
 #define QEMU_COPYRIGHT "Copyright (c) 2003-2017 " \
     "Fabrice Bellard and the QEMU Project developers"
 
+/* Bug reporting information for --help arguments, About dialogs, etc */
+#define QEMU_HELP_BOTTOM \
+    "See <http://qemu.org/contribute/report-a-bug> for how to report bugs.\n" \
+    "More information on the QEMU project at <http://qemu.org>."
+
 /* main function, renamed */
 #if defined(CONFIG_COCOA)
 int qemu_main(int argc, char **argv, char **envp);
@@ -76,8 +81,13 @@ int qemu_openpty_raw(int *aslave, char *pty_name);
     sendto(sockfd, buf, len, flags, destaddr, addrlen)
 #endif
 
+extern bool tcg_allowed;
 void tcg_exec_init(unsigned long tb_size);
-bool tcg_enabled(void);
+#ifdef CONFIG_TCG
+#define tcg_enabled() (tcg_allowed)
+#else
+#define tcg_enabled() 0
+#endif
 
 void cpu_exec_init_all(void);
 void cpu_exec_step_atomic(CPUState *cpu);

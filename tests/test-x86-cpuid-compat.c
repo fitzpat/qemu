@@ -1,9 +1,8 @@
 #include "qemu/osdep.h"
 #include "qemu-common.h"
-#include "qapi/qmp/qlist.h"
-#include "qapi/qmp/qstring.h"
+#include "qapi/error.h"
 #include "qapi/qmp/qdict.h"
-#include "qapi/qmp/qint.h"
+#include "qapi/qmp/qnum.h"
 #include "qapi/qmp/qbool.h"
 #include "libqtest.h"
 
@@ -57,12 +56,14 @@ static void test_cpuid_prop(const void *data)
 {
     const CpuidTestArgs *args = data;
     char *path;
-    QInt *value;
+    QNum *value;
+    int64_t val;
 
     qtest_start(args->cmdline);
     path = get_cpu0_qom_path();
-    value = qobject_to_qint(qom_get(path, args->property));
-    g_assert_cmpint(qint_get_int(value), ==, args->expected_value);
+    value = qobject_to_qnum(qom_get(path, args->property));
+    g_assert(qnum_get_try_int(value, &val));
+    g_assert_cmpint(val, ==, args->expected_value);
     qtest_end();
 
     QDECREF(value);
@@ -109,12 +110,15 @@ static uint32_t get_feature_word(QList *features, uint32_t eax, uint32_t ecx,
         uint32_t reax = qdict_get_int(w, "cpuid-input-eax");
         bool has_ecx = qdict_haskey(w, "cpuid-input-ecx");
         uint32_t recx = 0;
+        int64_t val;
 
         if (has_ecx) {
             recx = qdict_get_int(w, "cpuid-input-ecx");
         }
         if (eax == reax && (!has_ecx || ecx == recx) && !strcmp(rreg, reg)) {
-            return qint_get_int(qobject_to_qint(qdict_get(w, "features")));
+            g_assert(qnum_get_try_int(qobject_to_qnum(qdict_get(w, "features")),
+                                  &val));
+            return val;
         }
     }
     return 0;
@@ -313,6 +317,44 @@ int main(int argc, char **argv)
     add_cpuid_test("x86/cpuid/auto-xlevel2/pc-2.7",
                    "-machine pc-i440fx-2.7 -cpu 486,+xstore",
                    "xlevel2", 0);
+    /*
+     * QEMU 1.4.0 had auto-level enabled for CPUID[7], already,
+     * and the compat code that sets default level shouldn't
+     * disable the auto-level=7 code:
+     */
+    add_cpuid_test("x86/cpuid/auto-level7/pc-i440fx-1.4/off",
+                   "-machine pc-i440fx-1.4 -cpu Nehalem",
+                   "level", 2);
+    add_cpuid_test("x86/cpuid/auto-level7/pc-i440fx-1.5/on",
+                   "-machine pc-i440fx-1.4 -cpu Nehalem,+smap",
+                   "level", 7);
+    add_cpuid_test("x86/cpuid/auto-level7/pc-i440fx-2.3/off",
+                   "-machine pc-i440fx-2.3 -cpu Penryn",
+                   "level", 4);
+    add_cpuid_test("x86/cpuid/auto-level7/pc-i440fx-2.3/on",
+                   "-machine pc-i440fx-2.3 -cpu Penryn,+erms",
+                   "level", 7);
+    add_cpuid_test("x86/cpuid/auto-level7/pc-i440fx-2.9/off",
+                   "-machine pc-i440fx-2.9 -cpu Conroe",
+                   "level", 10);
+    add_cpuid_test("x86/cpuid/auto-level7/pc-i440fx-2.9/on",
+                   "-machine pc-i440fx-2.9 -cpu Conroe,+erms",
+                   "level", 10);
+
+    /*
+     * xlevel doesn't have any feature that triggers auto-level
+     * code on old machine-types.  Just check that the compat code
+     * is working correctly:
+     */
+    add_cpuid_test("x86/cpuid/xlevel-compat/pc-i440fx-2.3",
+                   "-machine pc-i440fx-2.3 -cpu SandyBridge",
+                   "xlevel", 0x8000000a);
+    add_cpuid_test("x86/cpuid/xlevel-compat/pc-i440fx-2.4/npt-off",
+                   "-machine pc-i440fx-2.4 -cpu SandyBridge,",
+                   "xlevel", 0x80000008);
+    add_cpuid_test("x86/cpuid/xlevel-compat/pc-i440fx-2.4/npt-on",
+                   "-machine pc-i440fx-2.4 -cpu SandyBridge,+npt",
+                   "xlevel", 0x80000008);
 
     /* Test feature parsing */
     add_feature_test("x86/cpuid/features/plus",

@@ -20,19 +20,6 @@
 
 #define HPET_INTCAP "hpet-intcap"
 
-#ifdef CONFIG_KVM
-#define kvm_pit_in_kernel() \
-    (kvm_irqchip_in_kernel() && !kvm_irqchip_is_split())
-#define kvm_pic_in_kernel()  \
-    (kvm_irqchip_in_kernel() && !kvm_irqchip_is_split())
-#define kvm_ioapic_in_kernel() \
-    (kvm_irqchip_in_kernel() && !kvm_irqchip_is_split())
-#else
-#define kvm_pit_in_kernel()      0
-#define kvm_pic_in_kernel()      0
-#define kvm_ioapic_in_kernel()   0
-#endif
-
 /**
  * PCMachineState:
  * @acpi_dev: link to ACPI PM device that performs ACPI hotplug handling
@@ -384,9 +371,19 @@ bool e820_get_entry(int, uint32_t, uint64_t *, uint64_t *);
 
 #define PC_COMPAT_2_9 \
     HW_COMPAT_2_9 \
+    {\
+        .driver   = "mch",\
+        .property = "extended-tseg-mbytes",\
+        .value    = stringify(0),\
+    },\
 
 #define PC_COMPAT_2_8 \
     HW_COMPAT_2_8 \
+    {\
+        .driver   = TYPE_X86_CPU,\
+        .property = "tcg-cpuid",\
+        .value    = "off",\
+    },\
     {\
         .driver   = "kvmclock",\
         .property = "x-mach-use-reliable-get-clock",\
@@ -566,75 +563,75 @@ bool e820_get_entry(int, uint32_t, uint64_t *, uint64_t *);
         .value    = "off",\
     },{\
         .driver   = "qemu64" "-" TYPE_X86_CPU,\
-        .property = "level",\
+        .property = "min-level",\
         .value    = stringify(4),\
     },{\
         .driver   = "kvm64" "-" TYPE_X86_CPU,\
-        .property = "level",\
+        .property = "min-level",\
         .value    = stringify(5),\
     },{\
         .driver   = "pentium3" "-" TYPE_X86_CPU,\
-        .property = "level",\
+        .property = "min-level",\
         .value    = stringify(2),\
     },{\
         .driver   = "n270" "-" TYPE_X86_CPU,\
-        .property = "level",\
+        .property = "min-level",\
         .value    = stringify(5),\
     },{\
         .driver   = "Conroe" "-" TYPE_X86_CPU,\
-        .property = "level",\
+        .property = "min-level",\
         .value    = stringify(4),\
     },{\
         .driver   = "Penryn" "-" TYPE_X86_CPU,\
-        .property = "level",\
+        .property = "min-level",\
         .value    = stringify(4),\
     },{\
         .driver   = "Nehalem" "-" TYPE_X86_CPU,\
-        .property = "level",\
+        .property = "min-level",\
         .value    = stringify(4),\
     },{\
         .driver   = "n270" "-" TYPE_X86_CPU,\
-        .property = "xlevel",\
+        .property = "min-xlevel",\
         .value    = stringify(0x8000000a),\
     },{\
         .driver   = "Penryn" "-" TYPE_X86_CPU,\
-        .property = "xlevel",\
+        .property = "min-xlevel",\
         .value    = stringify(0x8000000a),\
     },{\
         .driver   = "Conroe" "-" TYPE_X86_CPU,\
-        .property = "xlevel",\
+        .property = "min-xlevel",\
         .value    = stringify(0x8000000a),\
     },{\
         .driver   = "Nehalem" "-" TYPE_X86_CPU,\
-        .property = "xlevel",\
+        .property = "min-xlevel",\
         .value    = stringify(0x8000000a),\
     },{\
         .driver   = "Westmere" "-" TYPE_X86_CPU,\
-        .property = "xlevel",\
+        .property = "min-xlevel",\
         .value    = stringify(0x8000000a),\
     },{\
         .driver   = "SandyBridge" "-" TYPE_X86_CPU,\
-        .property = "xlevel",\
+        .property = "min-xlevel",\
         .value    = stringify(0x8000000a),\
     },{\
         .driver   = "IvyBridge" "-" TYPE_X86_CPU,\
-        .property = "xlevel",\
+        .property = "min-xlevel",\
         .value    = stringify(0x8000000a),\
     },{\
         .driver   = "Haswell" "-" TYPE_X86_CPU,\
-        .property = "xlevel",\
+        .property = "min-xlevel",\
         .value    = stringify(0x8000000a),\
     },{\
         .driver   = "Haswell-noTSX" "-" TYPE_X86_CPU,\
-        .property = "xlevel",\
+        .property = "min-xlevel",\
         .value    = stringify(0x8000000a),\
     },{\
         .driver   = "Broadwell" "-" TYPE_X86_CPU,\
-        .property = "xlevel",\
+        .property = "min-xlevel",\
         .value    = stringify(0x8000000a),\
     },{\
         .driver   = "Broadwell-noTSX" "-" TYPE_X86_CPU,\
-        .property = "xlevel",\
+        .property = "min-xlevel",\
         .value    = stringify(0x8000000a),\
     },{\
         .driver = TYPE_X86_CPU,\
@@ -860,7 +857,7 @@ bool e820_get_entry(int, uint32_t, uint64_t *, uint64_t *);
         .value    = stringify(2),\
     },{\
         .driver   = "Conroe-" TYPE_X86_CPU,\
-        .property = "level",\
+        .property = "min-level",\
         .value    = stringify(2),\
     },{\
         .driver   = "Penryn-" TYPE_X86_CPU,\
@@ -868,7 +865,7 @@ bool e820_get_entry(int, uint32_t, uint64_t *, uint64_t *);
         .value    = stringify(2),\
     },{\
         .driver   = "Penryn-" TYPE_X86_CPU,\
-        .property = "level",\
+        .property = "min-level",\
         .value    = stringify(2),\
     },{\
         .driver   = "Nehalem-" TYPE_X86_CPU,\
@@ -876,7 +873,7 @@ bool e820_get_entry(int, uint32_t, uint64_t *, uint64_t *);
         .value    = stringify(2),\
     },{\
         .driver   = "Nehalem-" TYPE_X86_CPU,\
-        .property = "level",\
+        .property = "min-level",\
         .value    = stringify(2),\
     },{\
         .driver   = "virtio-net-pci",\

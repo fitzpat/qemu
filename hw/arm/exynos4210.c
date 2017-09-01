@@ -26,6 +26,7 @@
 #include "qemu-common.h"
 #include "qemu/log.h"
 #include "cpu.h"
+#include "hw/cpu/a9mpcore.h"
 #include "hw/boards.h"
 #include "sysemu/sysemu.h"
 #include "hw/sysbus.h"
@@ -85,6 +86,9 @@
 
 /* Clock controller SFR base address */
 #define EXYNOS4210_CLK_BASE_ADDR            0x10030000
+
+/* PRNG/HASH SFR base address */
+#define EXYNOS4210_RNG_BASE_ADDR            0x10830400
 
 /* Display controllers (FIMD) */
 #define EXYNOS4210_FIMD0_BASE_ADDR          0x11C00000
@@ -160,16 +164,14 @@ static uint64_t exynos4210_calc_affinity(int cpu)
     return mp_affinity;
 }
 
-Exynos4210State *exynos4210_init(MemoryRegion *system_mem,
-        unsigned long ram_size)
+Exynos4210State *exynos4210_init(MemoryRegion *system_mem)
 {
-    int i, n;
     Exynos4210State *s = g_new(Exynos4210State, 1);
     qemu_irq gate_irq[EXYNOS4210_NCPUS][EXYNOS4210_IRQ_GATE_NINPUTS];
-    unsigned long mem_size;
-    DeviceState *dev;
     SysBusDevice *busdev;
     ObjectClass *cpu_oc;
+    DeviceState *dev;
+    int i, n;
 
     cpu_oc = cpu_class_by_name(TYPE_ARM_CPU, "cortex-a9");
     assert(cpu_oc);
@@ -213,7 +215,7 @@ Exynos4210State *exynos4210_init(MemoryRegion *system_mem,
     }
 
     /* Private memory region and Internal GIC */
-    dev = qdev_create(NULL, "a9mpcore_priv");
+    dev = qdev_create(NULL, TYPE_A9MPCORE_PRIV);
     qdev_prop_set_uint32(dev, "num-cpu", EXYNOS4210_NCPUS);
     qdev_init_nofail(dev);
     busdev = SYS_BUS_DEVICE(dev);
@@ -279,7 +281,6 @@ Exynos4210State *exynos4210_init(MemoryRegion *system_mem,
     /* Internal ROM */
     memory_region_init_ram(&s->irom_mem, NULL, "exynos4210.irom",
                            EXYNOS4210_IROM_SIZE, &error_fatal);
-    vmstate_register_ram_global(&s->irom_mem);
     memory_region_set_readonly(&s->irom_mem, true);
     memory_region_add_subregion(system_mem, EXYNOS4210_IROM_BASE_ADDR,
                                 &s->irom_mem);
@@ -295,25 +296,8 @@ Exynos4210State *exynos4210_init(MemoryRegion *system_mem,
     /* Internal RAM */
     memory_region_init_ram(&s->iram_mem, NULL, "exynos4210.iram",
                            EXYNOS4210_IRAM_SIZE, &error_fatal);
-    vmstate_register_ram_global(&s->iram_mem);
     memory_region_add_subregion(system_mem, EXYNOS4210_IRAM_BASE_ADDR,
                                 &s->iram_mem);
-
-    /* DRAM */
-    mem_size = ram_size;
-    if (mem_size > EXYNOS4210_DRAM_MAX_SIZE) {
-        memory_region_init_ram(&s->dram1_mem, NULL, "exynos4210.dram1",
-                mem_size - EXYNOS4210_DRAM_MAX_SIZE, &error_fatal);
-        vmstate_register_ram_global(&s->dram1_mem);
-        memory_region_add_subregion(system_mem, EXYNOS4210_DRAM1_BASE_ADDR,
-                &s->dram1_mem);
-        mem_size = EXYNOS4210_DRAM_MAX_SIZE;
-    }
-    memory_region_init_ram(&s->dram0_mem, NULL, "exynos4210.dram0", mem_size,
-                           &error_fatal);
-    vmstate_register_ram_global(&s->dram0_mem);
-    memory_region_add_subregion(system_mem, EXYNOS4210_DRAM0_BASE_ADDR,
-            &s->dram0_mem);
 
    /* PMU.
     * The only reason of existence at the moment is that secondary CPU boot
@@ -322,6 +306,7 @@ Exynos4210State *exynos4210_init(MemoryRegion *system_mem,
     sysbus_create_simple("exynos4210.pmu", EXYNOS4210_PMU_BASE_ADDR, NULL);
 
     sysbus_create_simple("exynos4210.clk", EXYNOS4210_CLK_BASE_ADDR, NULL);
+    sysbus_create_simple("exynos4210.rng", EXYNOS4210_RNG_BASE_ADDR, NULL);
 
     /* PWM */
     sysbus_create_varargs("exynos4210.pwm", EXYNOS4210_PWM_BASE_ADDR,

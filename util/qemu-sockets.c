@@ -104,17 +104,16 @@ NetworkAddressFamily inet_netfamily(int family)
  *   f     t       PF_INET6
  *   t     -       PF_INET
  *   t     f       PF_INET
- *   t     t       PF_INET6
+ *   t     t       PF_INET6/PF_UNSPEC
  *
  * NB, this matrix is only about getting the necessary results
  * from getaddrinfo(). Some of the cases require further work
  * after reading results from getaddrinfo in order to fully
- * apply the logic the end user wants. eg with the last case
- * ipv4=t + ipv6=t + PF_INET6, getaddrinfo alone can only
- * guarantee the ipv6=t part of the request - we need more
- * checks to provide ipv4=t part of the guarantee. This is
- * outside scope of this method and not currently handled by
- * callers at all.
+ * apply the logic the end user wants.
+ *
+ * In the first and last cases, we must set IPV6_V6ONLY=0
+ * when binding, to allow a single listener to potentially
+ * accept both IPv4+6 addresses.
  */
 int inet_ai_family_from_address(InetSocketAddress *addr,
                                 Error **errp)
@@ -123,6 +122,23 @@ int inet_ai_family_from_address(InetSocketAddress *addr,
         !addr->ipv6 && !addr->ipv4) {
         error_setg(errp, "Cannot disable IPv4 and IPv6 at same time");
         return PF_UNSPEC;
+    }
+    if ((addr->has_ipv6 && addr->ipv6) && (addr->has_ipv4 && addr->ipv4)) {
+        /*
+         * Some backends can only do a single listener. In that case
+         * we want empty hostname to resolve to "::" and then use the
+         * flag IPV6_V6ONLY==0 to get both protocols on 1 socket. This
+         * doesn't work for addresses other than "", so they're just
+         * inevitably broken until multiple listeners can be used,
+         * and thus we honour getaddrinfo automatic protocol detection
+         * Once all backends do multi-listener, remove the PF_INET6
+         * branch entirely.
+         */
+        if (!addr->host || g_str_equal(addr->host, "")) {
+            return PF_INET6;
+        } else {
+            return PF_UNSPEC;
+        }
     }
     if ((addr->has_ipv6 && addr->ipv6) || (addr->has_ipv4 && !addr->ipv4)) {
         return PF_INET6;
@@ -208,22 +224,43 @@ static int inet_listen_saddr(InetSocketAddress *saddr,
         }
 
         socket_set_fast_reuse(slisten);
-#ifdef IPV6_V6ONLY
-        if (e->ai_family == PF_INET6) {
-            /* listen on both ipv4 and ipv6 */
-            const int off = 0;
-            qemu_setsockopt(slisten, IPPROTO_IPV6, IPV6_V6ONLY, &off,
-                            sizeof(off));
-        }
-#endif
 
         port_min = inet_getport(e);
         port_max = saddr->has_to ? saddr->to + port_offset : port_min;
         for (p = port_min; p <= port_max; p++) {
+#ifdef IPV6_V6ONLY
+            /*
+             * Deals with first & last cases in matrix in comment
+             * for inet_ai_family_from_address().
+             */
+            int v6only =
+                ((!saddr->has_ipv4 && !saddr->has_ipv6) ||
+                 (saddr->has_ipv4 && saddr->ipv4 &&
+                  saddr->has_ipv6 && saddr->ipv6)) ? 0 : 1;
+#endif
             inet_setport(e, p);
+#ifdef IPV6_V6ONLY
+        rebind:
+            if (e->ai_family == PF_INET6) {
+                qemu_setsockopt(slisten, IPPROTO_IPV6, IPV6_V6ONLY, &v6only,
+                                sizeof(v6only));
+            }
+#endif
             if (bind(slisten, e->ai_addr, e->ai_addrlen) == 0) {
                 goto listen;
             }
+
+#ifdef IPV6_V6ONLY
+            /* If we got EADDRINUSE from an IPv6 bind & V6ONLY is unset,
+             * it could be that the IPv4 port is already claimed, so retry
+             * with V6ONLY set
+             */
+            if (e->ai_family == PF_INET6 && errno == EADDRINUSE && !v6only) {
+                v6only = 1;
+                goto rebind;
+            }
+#endif
+
             if (p == port_max) {
                 if (!e->ai_next) {
                     error_setg_errno(errp, errno, "Failed to bind socket");
@@ -603,15 +640,11 @@ int inet_parse(InetSocketAddress *addr, const char *str, Error **errp)
             error_setg(errp, "error parsing IPv6 address '%s'", str);
             return -1;
         }
-        addr->ipv6 = addr->has_ipv6 = true;
     } else {
         /* hostname or IPv4 addr */
         if (sscanf(str, "%64[^:]:%32[^,]%n", host, port, &pos) != 2) {
             error_setg(errp, "error parsing address '%s'", str);
             return -1;
-        }
-        if (host[strspn(host, "0123456789.")] == '\0') {
-            addr->ipv4 = addr->has_ipv4 = true;
         }
     }
 
@@ -845,6 +878,8 @@ static int unix_listen_saddr(UnixSocketAddress *saddr,
 {
     struct sockaddr_un un;
     int sock, fd;
+    char *pathbuf = NULL;
+    const char *path;
 
     sock = qemu_socket(PF_UNIX, SOCK_STREAM, 0);
     if (sock < 0) {
@@ -852,20 +887,22 @@ static int unix_listen_saddr(UnixSocketAddress *saddr,
         return -1;
     }
 
-    memset(&un, 0, sizeof(un));
-    un.sun_family = AF_UNIX;
-    if (saddr->path && strlen(saddr->path)) {
-        snprintf(un.sun_path, sizeof(un.sun_path), "%s", saddr->path);
+    if (saddr->path && saddr->path[0]) {
+        path = saddr->path;
     } else {
         const char *tmpdir = getenv("TMPDIR");
         tmpdir = tmpdir ? tmpdir : "/tmp";
-        if (snprintf(un.sun_path, sizeof(un.sun_path), "%s/qemu-socket-XXXXXX",
-                     tmpdir) >= sizeof(un.sun_path)) {
-            error_setg_errno(errp, errno,
-                             "TMPDIR environment variable (%s) too large", tmpdir);
-            goto err;
-        }
+        path = pathbuf = g_strdup_printf("%s/qemu-socket-XXXXXX", tmpdir);
+    }
 
+    if (strlen(path) > sizeof(un.sun_path)) {
+        error_setg(errp, "UNIX socket path '%s' is too long", path);
+        error_append_hint(errp, "Path must be less than %zu bytes\n",
+                          sizeof(un.sun_path));
+        goto err;
+    }
+
+    if (pathbuf != NULL) {
         /*
          * This dummy fd usage silences the mktemp() unsecure warning.
          * Using mkstemp() doesn't make things more secure here
@@ -873,26 +910,27 @@ static int unix_listen_saddr(UnixSocketAddress *saddr,
          * to unlink first and thus re-open the race window.  The
          * worst case possible is bind() failing, i.e. a DoS attack.
          */
-        fd = mkstemp(un.sun_path);
+        fd = mkstemp(pathbuf);
         if (fd < 0) {
             error_setg_errno(errp, errno,
-                             "Failed to make a temporary socket name in %s", tmpdir);
+                             "Failed to make a temporary socket %s", pathbuf);
             goto err;
         }
         close(fd);
-        if (update_addr) {
-            g_free(saddr->path);
-            saddr->path = g_strdup(un.sun_path);
-        }
     }
 
-    if (unlink(un.sun_path) < 0 && errno != ENOENT) {
+    if (unlink(path) < 0 && errno != ENOENT) {
         error_setg_errno(errp, errno,
-                         "Failed to unlink socket %s", un.sun_path);
+                         "Failed to unlink socket %s", path);
         goto err;
     }
+
+    memset(&un, 0, sizeof(un));
+    un.sun_family = AF_UNIX;
+    strncpy(un.sun_path, path, sizeof(un.sun_path));
+
     if (bind(sock, (struct sockaddr*) &un, sizeof(un)) < 0) {
-        error_setg_errno(errp, errno, "Failed to bind socket to %s", un.sun_path);
+        error_setg_errno(errp, errno, "Failed to bind socket to %s", path);
         goto err;
     }
     if (listen(sock, 1) < 0) {
@@ -900,9 +938,16 @@ static int unix_listen_saddr(UnixSocketAddress *saddr,
         goto err;
     }
 
+    if (update_addr && pathbuf) {
+        g_free(saddr->path);
+        saddr->path = pathbuf;
+    } else {
+        g_free(pathbuf);
+    }
     return sock;
 
 err:
+    g_free(pathbuf);
     closesocket(sock);
     return -1;
 }
@@ -932,9 +977,16 @@ static int unix_connect_saddr(UnixSocketAddress *saddr,
         qemu_set_nonblock(sock);
     }
 
+    if (strlen(saddr->path) > sizeof(un.sun_path)) {
+        error_setg(errp, "UNIX socket path '%s' is too long", saddr->path);
+        error_append_hint(errp, "Path must be less than %zu bytes\n",
+                          sizeof(un.sun_path));
+        goto err;
+    }
+
     memset(&un, 0, sizeof(un));
     un.sun_family = AF_UNIX;
-    snprintf(un.sun_path, sizeof(un.sun_path), "%s", saddr->path);
+    strncpy(un.sun_path, saddr->path, sizeof(un.sun_path));
 
     /* connect to peer */
     do {
@@ -956,13 +1008,18 @@ static int unix_connect_saddr(UnixSocketAddress *saddr,
     }
 
     if (rc < 0) {
-        error_setg_errno(errp, -rc, "Failed to connect socket");
-        close(sock);
-        sock = -1;
+        error_setg_errno(errp, -rc, "Failed to connect socket %s",
+                         saddr->path);
+        goto err;
     }
 
     g_free(connect_state);
     return sock;
+
+ err:
+    close(sock);
+    g_free(connect_state);
+    return -1;
 }
 
 #else
@@ -1301,40 +1358,6 @@ SocketAddress *socket_remote_address(int fd, Error **errp)
     return socket_sockaddr_to_address(&ss, sslen, errp);
 }
 
-char *socket_address_to_string(struct SocketAddress *addr, Error **errp)
-{
-    char *buf;
-    InetSocketAddress *inet;
-
-    switch (addr->type) {
-    case SOCKET_ADDRESS_TYPE_INET:
-        inet = &addr->u.inet;
-        if (strchr(inet->host, ':') == NULL) {
-            buf = g_strdup_printf("%s:%s", inet->host, inet->port);
-        } else {
-            buf = g_strdup_printf("[%s]:%s", inet->host, inet->port);
-        }
-        break;
-
-    case SOCKET_ADDRESS_TYPE_UNIX:
-        buf = g_strdup(addr->u.q_unix.path);
-        break;
-
-    case SOCKET_ADDRESS_TYPE_FD:
-        buf = g_strdup(addr->u.fd.str);
-        break;
-
-    case SOCKET_ADDRESS_TYPE_VSOCK:
-        buf = g_strdup_printf("%s:%s",
-                              addr->u.vsock.cid,
-                              addr->u.vsock.port);
-        break;
-
-    default:
-        abort();
-    }
-    return buf;
-}
 
 SocketAddress *socket_address_flatten(SocketAddressLegacy *addr_legacy)
 {

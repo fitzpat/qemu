@@ -140,7 +140,7 @@ static void i440fx_update_memory_mappings(PCII440FXState *d)
     memory_region_transaction_begin();
     for (i = 0; i < 13; i++) {
         pam_update(&d->pam_regions[i], i,
-                   pd->config[I440FX_PAM + ((i + 1) / 2)]);
+                   pd->config[I440FX_PAM + (DIV_ROUND_UP(i, 2))]);
     }
     memory_region_set_enabled(&d->smram_region,
                               !(pd->config[I440FX_SMRAM] & SMRAM_D_OPEN));
@@ -273,19 +273,19 @@ static void i440fx_pcihost_initfn(Object *obj)
     memory_region_init_io(&s->data_mem, obj, &pci_host_data_le_ops, s,
                           "pci-conf-data", 4);
 
-    object_property_add(obj, PCI_HOST_PROP_PCI_HOLE_START, "int",
+    object_property_add(obj, PCI_HOST_PROP_PCI_HOLE_START, "uint32",
                         i440fx_pcihost_get_pci_hole_start,
                         NULL, NULL, NULL, NULL);
 
-    object_property_add(obj, PCI_HOST_PROP_PCI_HOLE_END, "int",
+    object_property_add(obj, PCI_HOST_PROP_PCI_HOLE_END, "uint32",
                         i440fx_pcihost_get_pci_hole_end,
                         NULL, NULL, NULL, NULL);
 
-    object_property_add(obj, PCI_HOST_PROP_PCI_HOLE64_START, "int",
+    object_property_add(obj, PCI_HOST_PROP_PCI_HOLE64_START, "uint64",
                         i440fx_pcihost_get_pci_hole64_start,
                         NULL, NULL, NULL, NULL);
 
-    object_property_add(obj, PCI_HOST_PROP_PCI_HOLE64_END, "int",
+    object_property_add(obj, PCI_HOST_PROP_PCI_HOLE64_END, "uint64",
                         i440fx_pcihost_get_pci_hole64_end,
                         NULL, NULL, NULL, NULL);
 }
@@ -307,7 +307,7 @@ static void i440fx_realize(PCIDevice *dev, Error **errp)
     dev->config[I440FX_SMRAM] = 0x02;
 
     if (object_property_get_bool(qdev_get_machine(), "iommu", NULL)) {
-        error_report("warning: i440fx doesn't support emulated iommu");
+        warn_report("i440fx doesn't support emulated iommu");
     }
 }
 

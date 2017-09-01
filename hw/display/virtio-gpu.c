@@ -408,7 +408,7 @@ static void virtio_gpu_transfer_to_host_2d(VirtIOGPU *g,
     }
 
     format = pixman_image_get_format(res->image);
-    bpp = (PIXMAN_FORMAT_BPP(format) + 7) / 8;
+    bpp = DIV_ROUND_UP(PIXMAN_FORMAT_BPP(format), 8);
     stride = pixman_image_get_stride(res->image);
 
     if (t2d.offset || t2d.r.x || t2d.r.y ||
@@ -570,7 +570,7 @@ static void virtio_gpu_set_scanout(VirtIOGPU *g,
     scanout = &g->scanout[ss.scanout_id];
 
     format = pixman_image_get_format(res->image);
-    bpp = (PIXMAN_FORMAT_BPP(format) + 7) / 8;
+    bpp = DIV_ROUND_UP(PIXMAN_FORMAT_BPP(format), 8);
     offset = (ss.r.x * bpp) + ss.r.y * pixman_image_get_stride(res->image);
     if (!scanout->ds || surface_data(scanout->ds)
         != ((uint8_t *)pixman_image_get_data(res->image) + offset) ||
@@ -962,7 +962,7 @@ static const VMStateDescription vmstate_virtio_gpu_scanouts = {
     .version_id = 1,
     .fields = (VMStateField[]) {
         VMSTATE_INT32(enable, struct VirtIOGPU),
-        VMSTATE_UINT32_EQUAL(conf.max_outputs, struct VirtIOGPU),
+        VMSTATE_UINT32_EQUAL(conf.max_outputs, struct VirtIOGPU, NULL),
         VMSTATE_STRUCT_VARRAY_UINT32(scanout, struct VirtIOGPU,
                                      conf.max_outputs, 1,
                                      vmstate_virtio_gpu_scanout,
@@ -1092,7 +1092,9 @@ static int virtio_gpu_load(QEMUFile *f, void *opaque, size_t size,
 
         dpy_gfx_replace_surface(scanout->con, scanout->ds);
         dpy_gfx_update(scanout->con, 0, 0, scanout->width, scanout->height);
-        update_cursor(g, &scanout->cursor);
+        if (scanout->cursor.resource_id) {
+            update_cursor(g, &scanout->cursor);
+        }
         res->scanout_bitmask |= (1 << i);
     }
 

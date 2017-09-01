@@ -29,53 +29,6 @@
 
 #include "migration/qjson.h"
 
-typedef void SaveStateHandler(QEMUFile *f, void *opaque);
-typedef int LoadStateHandler(QEMUFile *f, void *opaque, int version_id);
-
-typedef struct SaveVMHandlers {
-    /* This runs inside the iothread lock.  */
-    SaveStateHandler *save_state;
-
-    void (*cleanup)(void *opaque);
-    int (*save_live_complete_postcopy)(QEMUFile *f, void *opaque);
-    int (*save_live_complete_precopy)(QEMUFile *f, void *opaque);
-
-    /* This runs both outside and inside the iothread lock.  */
-    bool (*is_active)(void *opaque);
-
-    /* This runs outside the iothread lock in the migration case, and
-     * within the lock in the savevm case.  The callback had better only
-     * use data that is local to the migration thread or protected
-     * by other locks.
-     */
-    int (*save_live_iterate)(QEMUFile *f, void *opaque);
-
-    /* This runs outside the iothread lock!  */
-    int (*save_live_setup)(QEMUFile *f, void *opaque);
-    void (*save_live_pending)(QEMUFile *f, void *opaque,
-                              uint64_t threshold_size,
-                              uint64_t *non_postcopiable_pending,
-                              uint64_t *postcopiable_pending);
-    LoadStateHandler *load_state;
-} SaveVMHandlers;
-
-int register_savevm(DeviceState *dev,
-                    const char *idstr,
-                    int instance_id,
-                    int version_id,
-                    SaveStateHandler *save_state,
-                    LoadStateHandler *load_state,
-                    void *opaque);
-
-int register_savevm_live(DeviceState *dev,
-                         const char *idstr,
-                         int instance_id,
-                         int version_id,
-                         SaveVMHandlers *ops,
-                         void *opaque);
-
-void unregister_savevm(DeviceState *dev, const char *idstr, void *opaque);
-
 typedef struct VMStateInfo VMStateInfo;
 typedef struct VMStateDescription VMStateDescription;
 typedef struct VMStateField VMStateField;
@@ -195,11 +148,14 @@ enum VMStateFlags {
 typedef enum {
     MIG_PRI_DEFAULT = 0,
     MIG_PRI_IOMMU,              /* Must happen before PCI devices */
+    MIG_PRI_GICV3_ITS,          /* Must happen before PCI devices */
+    MIG_PRI_GICV3,              /* Must happen before the ITS */
     MIG_PRI_MAX,
 } MigrationPriority;
 
 struct VMStateField {
     const char *name;
+    const char *err_hint;
     size_t offset;
     size_t size;
     size_t start;
@@ -293,6 +249,18 @@ extern const VMStateInfo vmstate_info_qtailq;
 
 #define VMSTATE_SINGLE_TEST(_field, _state, _test, _version, _info, _type) { \
     .name         = (stringify(_field)),                             \
+    .version_id   = (_version),                                      \
+    .field_exists = (_test),                                         \
+    .size         = sizeof(_type),                                   \
+    .info         = &(_info),                                        \
+    .flags        = VMS_SINGLE,                                      \
+    .offset       = vmstate_offset_value(_state, _field, _type),     \
+}
+
+#define VMSTATE_SINGLE_FULL(_field, _state, _test, _version, _info,  \
+                            _type, _err_hint) {                      \
+    .name         = (stringify(_field)),                             \
+    .err_hint     = (_err_hint),                                     \
     .version_id   = (_version),                                      \
     .field_exists = (_test),                                         \
     .size         = sizeof(_type),                                   \
@@ -807,29 +775,35 @@ extern const VMStateInfo vmstate_info_qtailq;
 #define VMSTATE_UINT64(_f, _s)                                        \
     VMSTATE_UINT64_V(_f, _s, 0)
 
-#define VMSTATE_UINT8_EQUAL(_f, _s)                                   \
-    VMSTATE_SINGLE(_f, _s, 0, vmstate_info_uint8_equal, uint8_t)
+#define VMSTATE_UINT8_EQUAL(_f, _s, _err_hint)                        \
+    VMSTATE_SINGLE_FULL(_f, _s, 0, 0,                                 \
+                        vmstate_info_uint8_equal, uint8_t, _err_hint)
 
-#define VMSTATE_UINT16_EQUAL(_f, _s)                                  \
-    VMSTATE_SINGLE(_f, _s, 0, vmstate_info_uint16_equal, uint16_t)
+#define VMSTATE_UINT16_EQUAL(_f, _s, _err_hint)                       \
+    VMSTATE_SINGLE_FULL(_f, _s, 0, 0,                                 \
+                        vmstate_info_uint16_equal, uint16_t, _err_hint)
 
-#define VMSTATE_UINT16_EQUAL_V(_f, _s, _v)                            \
-    VMSTATE_SINGLE(_f, _s, _v, vmstate_info_uint16_equal, uint16_t)
+#define VMSTATE_UINT16_EQUAL_V(_f, _s, _v, _err_hint)                 \
+    VMSTATE_SINGLE_FULL(_f, _s, 0,  _v,                               \
+                        vmstate_info_uint16_equal, uint16_t, _err_hint)
 
-#define VMSTATE_INT32_EQUAL(_f, _s)                                   \
-    VMSTATE_SINGLE(_f, _s, 0, vmstate_info_int32_equal, int32_t)
+#define VMSTATE_INT32_EQUAL(_f, _s, _err_hint)                        \
+    VMSTATE_SINGLE_FULL(_f, _s, 0, 0,                                 \
+                        vmstate_info_int32_equal, int32_t, _err_hint)
 
-#define VMSTATE_UINT32_EQUAL_V(_f, _s, _v)                            \
-    VMSTATE_SINGLE(_f, _s, _v, vmstate_info_uint32_equal, uint32_t)
+#define VMSTATE_UINT32_EQUAL_V(_f, _s, _v, _err_hint)                 \
+    VMSTATE_SINGLE_FULL(_f, _s, 0,  _v,                               \
+                        vmstate_info_uint32_equal, uint32_t, _err_hint)
 
-#define VMSTATE_UINT32_EQUAL(_f, _s)                                  \
-    VMSTATE_UINT32_EQUAL_V(_f, _s, 0)
+#define VMSTATE_UINT32_EQUAL(_f, _s, _err_hint)                       \
+    VMSTATE_UINT32_EQUAL_V(_f, _s, 0, _err_hint)
 
-#define VMSTATE_UINT64_EQUAL_V(_f, _s, _v)                            \
-    VMSTATE_SINGLE(_f, _s, _v, vmstate_info_uint64_equal, uint64_t)
+#define VMSTATE_UINT64_EQUAL_V(_f, _s, _v, _err_hint)                 \
+    VMSTATE_SINGLE_FULL(_f, _s, 0,  _v,                               \
+                        vmstate_info_uint64_equal, uint64_t, _err_hint)
 
-#define VMSTATE_UINT64_EQUAL(_f, _s)                                  \
-    VMSTATE_UINT64_EQUAL_V(_f, _s, 0)
+#define VMSTATE_UINT64_EQUAL(_f, _s, _err_hint)                       \
+    VMSTATE_UINT64_EQUAL_V(_f, _s, 0, _err_hint)
 
 #define VMSTATE_INT32_POSITIVE_LE(_f, _s)                             \
     VMSTATE_SINGLE(_f, _s, 0, vmstate_info_int32_le, int32_t)
@@ -1018,8 +992,6 @@ extern const VMStateInfo vmstate_info_qtailq;
 #define VMSTATE_END_OF_LIST()                                         \
     {}
 
-#define SELF_ANNOUNCE_ROUNDS 5
-
 int vmstate_load_state(QEMUFile *f, const VMStateDescription *vmsd,
                        void *opaque, int version_id);
 void vmstate_save_state(QEMUFile *f, const VMStateDescription *vmsd,
@@ -1050,16 +1022,6 @@ struct MemoryRegion;
 void vmstate_register_ram(struct MemoryRegion *memory, DeviceState *dev);
 void vmstate_unregister_ram(struct MemoryRegion *memory, DeviceState *dev);
 void vmstate_register_ram_global(struct MemoryRegion *memory);
-
-static inline
-int64_t self_announce_delay(int round)
-{
-    assert(round < SELF_ANNOUNCE_ROUNDS && round > 0);
-    /* delay 50ms, 150ms, 250ms, ... */
-    return 50 + (SELF_ANNOUNCE_ROUNDS - round - 1) * 100;
-}
-
-void dump_vmstate_json_to_file(FILE *out_fp);
 
 bool vmstate_check_only_migratable(const VMStateDescription *vmsd);
 
