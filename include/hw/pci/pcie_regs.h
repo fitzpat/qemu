@@ -17,6 +17,9 @@
 #define PCI_EXT_CAP_NEXT_SHIFT          20
 #define PCI_EXT_CAP_NEXT_MASK           (0xffc << PCI_EXT_CAP_NEXT_SHIFT)
 
+#define PCI_SRIOV_VER                   1
+#define PCI_SRIOV_SIZEOF                0x40
+
 #define PCI_EXT_CAP(id, ver, next)                                      \
     ((id) |                                                             \
      ((ver) << PCI_EXT_CAP_VER_SHIFT) |                                 \

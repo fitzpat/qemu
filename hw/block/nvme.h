@@ -19,8 +19,8 @@ typedef struct NvmeBar {
 } NvmeBar;
 
 enum NvmeNsSelect {
-	NVME_NS_CONTROLLER_ATTACH = 0,
-	NVME_NS_CONTROLLER_DETACH = 1,
+    NVME_NS_CONTROLLER_ATTACH = 0,
+    NVME_NS_CONTROLLER_DETACH = 1,
 };
 
 enum NvmeNsManagement {
@@ -248,9 +248,23 @@ enum NvmeAdminCommands {
     NVME_ADM_CMD_ACTIVATE_FW    = 0x10,
     NVME_ADM_CMD_DOWNLOAD_FW    = 0x11,
     NVME_ADM_CMD_NS_ATTACH      = 0x15,
+    NVME_ADM_VIRT_MANAGEMENT    = 0x1C,
     NVME_ADM_CMD_FORMAT_NVM     = 0x80,
     NVME_ADM_CMD_SECURITY_SEND  = 0x81,
     NVME_ADM_CMD_SECURITY_RECV  = 0x82,
+};
+
+enum NvmeAdminCns {
+    NVME_ADM_CNS_ID_NS            = 0x00,
+    NVME_ADM_CNS_ID_CTRL          = 0x01,
+    NVME_ADM_CNS_ID_NS_LIST       = 0x02,
+    NVME_ADM_CNS_NS_DESC_LIST     = 0x03,
+    NVME_ADM_CNS_ID_NS_LIST_ALLOC = 0x10,
+    NVME_ADM_CNS_ID_NS_ALLOC      = 0x11,
+    NVME_ADM_CNS_CTRL_LIST_NS_ATT = 0x12,
+    NVME_ADM_CNS_CTRL_LIST        = 0x13,
+    NVME_ADM_CNS_PRIM_CTRL_CAP    = 0x14,
+    NVME_ADM_CNS_SEC_CTRL_LIST    = 0x15,
 };
 
 enum NvmeIoCommands {
@@ -447,6 +461,10 @@ enum NvmeStatusCodes {
     NVME_NS_NOT_ATTACHED        = 0x001A,
     NVME_THIN_PROV_NOT_SUP      = 0x001B,
     NVME_CTRL_LIST_INVALID      = 0x001C,
+    NVME_INVALID_CTRL_ID        = 0x001F,
+    NVME_INVALID_SEC_CTRL_ST    = 0x0020,
+    NVME_INVALID_NUM_CTRL_RES   = 0x0021,
+    NVME_INVALID_RES_ID         = 0x0022,
     NVME_LBA_RANGE              = 0x0080,
     NVME_CAP_EXCEEDED           = 0x0081,
     NVME_NS_NOT_READY           = 0x0082,
@@ -572,7 +590,9 @@ typedef struct NvmeIdCtrl {
     uint8_t     lpa;
     uint8_t     elpe;
     uint8_t     npss;
-    uint8_t     rsvd279[16];
+    uint8_t     rsvd279[8];
+    uint32_t    hmpre;
+    uint32_t    hmmin;
     uint64_t    tnvmcap;
     uint64_t    unvmcap;
     uint8_t     rsvd511[216];
@@ -592,6 +612,27 @@ typedef struct NvmeIdCtrl {
     uint8_t     vs[1024];
 } NvmeIdCtrl;
 
+typedef struct NvmeIdPrimaryCtrl {
+    uint16_t    cntlid;
+    uint16_t    portid;
+    uint8_t     crt;
+    uint8_t     rsvd31[26];
+    uint32_t    vqfrt;
+    uint32_t    vqrfa;
+    uint16_t    vqrfap;
+    uint16_t    vqprt;
+    uint16_t    vqfrsm;
+    uint16_t    vqgran;
+    uint8_t     rsvd63[16];
+    uint32_t    vifrt;
+    uint32_t    virfa;
+    uint16_t    virfap;
+    uint16_t    viprt;
+    uint16_t    vifrsm;
+    uint16_t    vigran;
+    uint8_t     rsvf4095[4016];
+} NvmeIdPrimaryCtrl;
+
 enum NvmeIdCtrlOacs {
     NVME_OACS_SECURITY  = 1 << 0,
     NVME_OACS_FORMAT    = 1 << 1,
@@ -605,6 +646,13 @@ enum NvmeIdCtrlOncs {
     NVME_ONCS_WRITE_ZEROS   = 1 << 3,
     NVME_ONCS_FEATURES      = 1 << 4,
     NVME_ONCS_RESRVATIONS   = 1 << 5,
+};
+
+enum NvmeVirtMgmtAct {
+    NVME_VIRT_MGMT_PRIM_CTRL_FLEX_ALLOC  = 0x1,
+    NVME_VIRT_MGMT_SEC_CTRL_OFFLINE      = 0x7,
+    NVME_VIRT_MGMT_SEC_CTRL_ASSIGN_RES   = 0x8,
+    NVME_VIRT_MGMT_SEC_CTRL_ONLINE       = 0x9,
 };
 
 #define NVME_CTRL_SQES_MIN(sqes) ((sqes) & 0xf)
@@ -626,6 +674,17 @@ typedef struct NvmeFeatureVal {
     uint32_t    sw_prog_marker;
 } NvmeFeatureVal;
 
+typedef struct NvmeSecondaryControllerEntry {
+    uint16_t               scid;        /** Secondary Controller Identifier */
+    uint16_t               pcid;        /** Primary Controller Identifier */
+    uint8_t                scs;         /** Secondary Controller State */
+    uint8_t                rsvd7[3];
+    uint16_t               vfn;         /** Virtual Function Number */
+    uint16_t               nvq;         /** Number of VQ Flexible Resources Assigned */
+    uint16_t               nvi;         /** Number of VI Flexible Resources Assigned */
+    uint8_t                rsvd31[18];
+} NvmeSecondaryControllerEntry;
+
 #define NVME_ARB_AB(arb)    (arb & 0x7)
 #define NVME_ARB_LPW(arb)   ((arb >> 8) & 0xff)
 #define NVME_ARB_MPW(arb)   ((arb >> 16) & 0xff)
@@ -646,6 +705,7 @@ enum NvmeFeatureIds {
     NVME_INTERRUPT_VECTOR_CONF      = 0x9,
     NVME_WRITE_ATOMICITY            = 0xa,
     NVME_ASYNCHRONOUS_EVENT_CONF    = 0xb,
+    NVME_HOST_MEM_BUF               = 0xd,
     NVME_SOFTWARE_PROGRESS_MARKER   = 0x80
 };
 
@@ -721,6 +781,7 @@ static inline void _nvme_check_size(void)
     QEMU_BUILD_BUG_ON(sizeof(NvmeFwSlotInfoLog) != 512);
     QEMU_BUILD_BUG_ON(sizeof(NvmeSmartLog) != 512);
     QEMU_BUILD_BUG_ON(sizeof(NvmeIdCtrl) != 4096);
+    QEMU_BUILD_BUG_ON(sizeof(NvmeIdPrimaryCtrl) != 4096);
     QEMU_BUILD_BUG_ON(sizeof(NvmeIdNs) != 4096);
 }
 
@@ -842,22 +903,31 @@ typedef struct NvmeCtrl {
     uint32_t    cmb_size_mb;
     uint32_t    cmbsz;
     uint32_t    cmbloc;
+    uint32_t    sriov_total_vfs;
     uint8_t     *cmbuf;
+    uint8_t     ehm;
+    uint8_t     hsize;
+    uint32_t    hmdlal;
+    uint32_t    hmdlua;
+    uint32_t    hmdlec;
+    uint8_t     *hmbuf;
+    uint32_t    hmmin;
+    uint32_t    hmpre;
+    uint16_t    num_vfs;
+    uint16_t    nvq;
+    uint16_t    nvi;
 
     char            *serial;
-    NvmeErrorLog    *elpes;
-    NvmeRequest     **aer_reqs;
     NvmeNamespace   *namespaces;
     NvmeSQueue      **sq;
     NvmeCQueue      **cq;
     NvmeSQueue      admin_sq;
     NvmeCQueue      admin_cq;
-    NvmeFeatureVal  features;
     NvmeIdCtrl      id_ctrl;
 
-    QSIMPLEQ_HEAD(aer_queue, NvmeAsyncEvent) aer_queue;
-    QEMUTimer   *aer_timer;
-    uint8_t     aer_mask;
+    NvmeIdPrimaryCtrl id_prim_ctrl;
+    struct NvmeCtrl   **secondary_ctrl_list;
+
 } NvmeCtrl;
 
 #endif /* HW_NVME_H */

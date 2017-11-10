@@ -23,6 +23,7 @@
 #include "qemu-common.h"
 #include "hw/pci/pci_bridge.h"
 #include "hw/pci/pcie.h"
+#include "hw/pci/pci.h"
 #include "hw/pci/msix.h"
 #include "hw/pci/msi.h"
 #include "hw/pci/pci_bus.h"
@@ -738,6 +739,201 @@ void pcie_ari_init(PCIDevice *dev, uint16_t offset, uint16_t nextfn)
                         offset, PCI_ARI_SIZEOF);
     pci_set_long(dev->config + offset + PCI_ARI_CAP, (nextfn & 0xff) << 8);
 }
+//
+///* SR/IOV */
+//void pcie_sriov_init(PCIDevice *dev, uint16_t offset,
+//                     const char *vfname, uint16_t vf_dev_id,
+//                     uint16_t init_vfs, uint16_t total_vfs)
+//{
+//    uint8_t *cfg = dev->config + offset;
+//    uint8_t *wmask;
+//    pcie_add_capability(dev, PCI_EXT_CAP_ID_SRIOV, 1,
+//                        offset, PCI_EXT_CAP_SRIOV_SIZEOF);
+//    dev->exp.sriov_cap = offset;
+//    dev->exp.num_vfs = 0;
+//    dev->exp.vfname = g_strdup(vfname);
+//    dev->exp.vf = NULL;
+//
+//    /* set some sensible defaults - devices can override later */
+//    pci_set_word(cfg + PCI_SRIOV_VF_OFFSET, 0x1);
+//    pci_set_word(cfg + PCI_SRIOV_VF_STRIDE, 0x1);
+//    pci_set_word(cfg + PCI_SRIOV_SUP_PGSIZE, 0x553);
+//    pci_set_word(cfg + PCI_SRIOV_SYS_PGSIZE, 0x1);
+//    pci_set_word(cfg + PCI_SRIOV_CAP, 0x1);
+//
+//    /* Set up device ID and initial/total number of VFs available */
+//    pci_set_word(cfg + PCI_SRIOV_VF_DID, vf_dev_id);
+//    pci_set_word(cfg + PCI_SRIOV_INITIAL_VF, init_vfs);
+//    pci_set_word(cfg + PCI_SRIOV_TOTAL_VF, total_vfs);
+//
+//    /* Write enable control bits */
+//    wmask = dev->wmask + offset;
+//    pci_set_word(wmask + PCI_SRIOV_CTRL,
+//                 PCI_SRIOV_CTRL_VFE | PCI_SRIOV_CTRL_MSE | PCI_SRIOV_CTRL_ARI);
+//    pci_set_word(wmask + PCI_SRIOV_NUM_VF, 0xffff);
+//
+//    qdev_prop_set_bit(&dev->qdev, "multifunction", true);
+//}
+//
+//
+//void pcie_sriov_exit(PCIDevice *dev)
+//{
+//    PCIE_DPRINTF("\n");
+//    pcie_sriov_reset_vfs(dev);
+//}
+//
+//void pcie_sriov_init_bar(PCIDevice *dev, int region_num,
+//                         uint8_t type, dma_addr_t size)
+//{
+//    uint32_t addr;
+//    uint64_t wmask;
+//    uint16_t sriov_cap = dev->exp.sriov_cap;
+//
+//    assert(sriov_cap > 0);
+//    assert(region_num >= 0);
+//    assert(region_num < PCI_NUM_REGIONS);
+//    assert(region_num != PCI_ROM_SLOT);
+//
+//    wmask = ~(size - 1);
+//    addr = sriov_cap + PCI_SRIOV_BAR + region_num * 4;
+//
+//    pci_set_long(dev->config + addr, type);
+//    if (!(type & PCI_BASE_ADDRESS_SPACE_IO) &&
+//        type & PCI_BASE_ADDRESS_MEM_TYPE_64) {
+//        pci_set_quad(dev->wmask + addr, wmask);
+//        pci_set_quad(dev->cmask + addr, ~0ULL);
+//    } else {
+//        pci_set_long(dev->wmask + addr, wmask & 0xffffffff);
+//        pci_set_long(dev->cmask + addr, 0xffffffff);
+//    }
+//    dev->exp.vf_bar_type[region_num] = type;
+//}
+//
+//void pcie_register_vf_bar(PCIDevice *dev, int region_num,
+//                          MemoryRegion *memory)
+//{
+//    PCIIORegion *r;
+//    uint8_t type;
+//    pcibus_t size = memory_region_size(memory);
+//
+//    assert(dev->exp.is_vf); /* PFs must use pci_register_bar */
+//    assert(region_num >= 0);
+//    assert(region_num < PCI_NUM_REGIONS);
+//    type = dev->exp.pf->exp.vf_bar_type[region_num];
+//
+//    if (size & (size-1)) {
+//        fprintf(stderr, "ERROR: PCI region size must be pow2 "
+//                    "type=0x%x, size=0x%"FMT_PCIBUS"\n", type, size);
+//        exit(1);
+//    }
+//
+//    r = &dev->io_regions[region_num];
+//    r->memory = memory;
+//    r->address_space =
+//        type & PCI_BASE_ADDRESS_SPACE_IO
+//        ? dev->bus->address_space_io
+//        : dev->bus->address_space_mem;
+//    r->size = size;
+//    r->type = type;
+//
+//    r->addr = pci_bar_address(dev, region_num, r->type, r->size);
+//    if (r->addr != PCI_BAR_UNMAPPED) {
+//        memory_region_add_subregion_overlap(r->address_space,
+//                                            r->addr, r->memory, 1);
+//    }
+//}
+//
+//
+//static PCIDevice *pcie_create_vf(PCIDevice *pf, int devfn, const char *name)
+//{
+////    int ret;
+//    PCIDevice *dev = pci_create(pf->bus, devfn, name);
+//    dev->exp.is_vf = true;
+//    dev->exp.pf = pf;
+////    ret =
+//    qdev_init_nofail(&dev->qdev);
+////    if (ret)
+////        return NULL;
+//
+//    /* set vid/did according to sr/iov spec - they are not used */
+//    pci_config_set_vendor_id(dev->config, 0xffff);
+//    pci_config_set_device_id(dev->config, 0xffff);
+//    return dev;
+//}
+//
+//
+//void pcie_sriov_create_vfs(PCIDevice *dev)
+//{
+//    uint16_t num_vfs;
+//    uint16_t i;
+//    int32_t devfn = dev->devfn + 1;
+//    uint16_t sriov_cap = dev->exp.sriov_cap;
+//
+//    assert(sriov_cap > 0);
+//    num_vfs = pci_get_word(dev->config + sriov_cap + PCI_SRIOV_NUM_VF);
+//
+//    dev->exp.vf = g_malloc(sizeof(PCIDevice*) * num_vfs);
+//    assert(dev->exp.vf);
+//
+//    PCIE_DEV_PRINTF(dev, "creating %d vf devs\n", num_vfs);
+//    for (i = 0; i < num_vfs; i++) {
+//        dev->exp.vf[i] = pcie_create_vf(dev, devfn++, dev->exp.vfname);
+//        if (!dev->exp.vf[i]) {
+//            PCIE_DEV_PRINTF(dev, "Failed to create VF %d\n", i);
+//            num_vfs = i;
+//            break;
+//        }
+//    }
+//    dev->exp.num_vfs = num_vfs;
+//}
+//
+//
+//void pcie_sriov_reset_vfs(PCIDevice *dev)
+//{
+//    Error *local_err = NULL;
+//    uint16_t num_vfs = dev->exp.num_vfs;
+//    uint16_t i;
+//    PCIE_DEV_PRINTF(dev, "Resetting %d vf devs\n", num_vfs);
+//    for (i = 0; i < num_vfs; i++) {
+//        qdev_unplug(&dev->exp.vf[i]->qdev, &local_err);
+//        if (local_err) {
+//            fprintf(stderr, "Failed to unplug: %s\n",
+//                    error_get_pretty(local_err));
+//            error_free(local_err);
+//        }
+//    }
+//    dev->exp.num_vfs = 0;
+//}
+//
+//
+//void pcie_sriov_config_write(PCIDevice *dev, uint32_t address, uint32_t val, int len)
+//{
+//    uint32_t off;
+//    uint16_t sriov_cap = dev->exp.sriov_cap;
+//
+//    if (!sriov_cap || address < sriov_cap) {
+//        return;
+//    }
+//    off = address - sriov_cap;
+//    if (off >= PCI_EXT_CAP_SRIOV_SIZEOF) {
+//        return;
+//    }
+//
+//    PCIE_DEV_PRINTF(dev, "cap at 0x%x sriov offset 0x%x val 0x%x len %d\n",
+//                 sriov_cap, off, val, len);
+//
+//    if (range_covers_byte(off, len, PCI_SRIOV_CTRL)) {
+//        if (dev->exp.num_vfs) {
+//            if (!(val & PCI_SRIOV_CTRL_VFE)) {
+//                pcie_sriov_reset_vfs(dev);
+//            }
+//        } else {
+//            if (val & PCI_SRIOV_CTRL_VFE) {
+//                pcie_sriov_create_vfs(dev);
+//            }
+//        }
+//    }
+//}
 
 void pcie_dev_ser_num_init(PCIDevice *dev, uint16_t offset, uint64_t ser_num)
 {

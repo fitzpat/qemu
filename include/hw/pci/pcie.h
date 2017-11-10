@@ -25,6 +25,8 @@
 #include "hw/pci/pci_regs.h"
 #include "hw/pci/pcie_regs.h"
 #include "hw/pci/pcie_aer.h"
+#include "hw/pci/pci.h"
+#include "hw/pci/pcie_sriov.h"
 #include "hw/hotplug.h"
 
 typedef enum {
@@ -77,6 +79,21 @@ struct PCIExpressDevice {
     uint16_t aer_cap;
     PCIEAERLog aer_log;
 
+
+    /* SR/IOV */
+    uint16_t sriov_cap;
+    PCIESriovPF sriov_pf;
+    PCIESriovVF sriov_vf;
+
+//    /* SR-IOV */
+//   uint16_t sriov_cap;
+//   uint16_t num_vfs;           /* Number of virtual functions created */
+//   bool is_vf;                 /* Set if this device is a virtual function */
+//   const char *vfname;         /* Reference to the device type used for the VFs */
+//   PCIDevice **vf;             /* Pointer to an array of num_vfs VF devices */
+//   PCIDevice *pf;              /* Pointer back to owner physical function */
+//   uint8_t vf_bar_type[7];  /* Store type for each VF bar */
+
     /* Offset of ATS capability in config space */
     uint16_t ats_cap;
 };
@@ -128,6 +145,24 @@ void pcie_add_capability(PCIDevice *dev,
                          uint16_t offset, uint16_t size);
 
 void pcie_ari_init(PCIDevice *dev, uint16_t offset, uint16_t nextfn);
+//void pcie_sriov_init(PCIDevice *dev, uint16_t offset,
+//                     const char *vfname, uint16_t vf_dev_id,
+//                     uint16_t init_vfs, uint16_t total_vfs);
+//void pcie_sriov_exit(PCIDevice *dev);
+//
+///* Set up a VF bar in the SR/IOV bar area */
+//void pcie_sriov_init_bar(PCIDevice *s, int region_num,
+//                         uint8_t type, dma_addr_t size);
+//
+///* Instantiate a bar for a VF */
+//void pcie_register_vf_bar(PCIDevice *pci_dev, int region_num,
+//                          MemoryRegion *memory);
+//
+//void pcie_sriov_create_vfs(PCIDevice *dev);
+//void pcie_sriov_reset_vfs(PCIDevice *dev);
+//void pcie_sriov_config_write(PCIDevice *dev, uint32_t address,
+//                             uint32_t val, int len);
+
 void pcie_dev_ser_num_init(PCIDevice *dev, uint16_t offset, uint64_t ser_num);
 void pcie_ats_init(PCIDevice *dev, uint16_t offset);
 

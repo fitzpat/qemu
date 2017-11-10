@@ -356,6 +356,7 @@ void pci_register_vga(PCIDevice *pci_dev, MemoryRegion *mem,
                       MemoryRegion *io_lo, MemoryRegion *io_hi);
 void pci_unregister_vga(PCIDevice *pci_dev);
 pcibus_t pci_get_bar_addr(PCIDevice *pci_dev, int region_num);
+pcibus_t pci_bar_address(PCIDevice *d, int reg, uint8_t type, pcibus_t size);
 
 int pci_add_capability(PCIDevice *pdev, uint8_t cap_id,
                        uint8_t offset, uint8_t size,
@@ -554,6 +555,11 @@ static inline void
 pci_config_set_interrupt_pin(uint8_t *pci_config, uint8_t val)
 {
     pci_set_byte(&pci_config[PCI_INTERRUPT_PIN], val);
+}
+
+static inline int pci_is_vf(const PCIDevice *d)
+{
+    return d->exp.sriov_vf.pf != NULL;
 }
 
 /*
