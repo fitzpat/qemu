@@ -259,6 +259,7 @@ enum NvmeAdminCns {
     NVME_ADM_CNS_ID_CTRL          = 0x01,
     NVME_ADM_CNS_ID_NS_LIST       = 0x02,
     NVME_ADM_CNS_NS_DESC_LIST     = 0x03,
+    NVME_ADM_CNS_NVM_SET_LIST     = 0x04,
     NVME_ADM_CNS_ID_NS_LIST_ALLOC = 0x10,
     NVME_ADM_CNS_ID_NS_ALLOC      = 0x11,
     NVME_ADM_CNS_CTRL_LIST_NS_ATT = 0x12,
@@ -275,6 +276,12 @@ enum NvmeIoCommands {
     NVME_CMD_COMPARE            = 0x05,
     NVME_CMD_WRITE_ZEROS        = 0x08,
     NVME_CMD_DSM                = 0x09,
+};
+
+enum NvmeLogPages {
+    ENDURANCE_GROUP_INFO        = 0x09,
+    PRED_LAT_PER_NVM_SET        = 0x0A,
+    PRED_LAT_EVENT_AGGREGATE    = 0x0B,
 };
 
 typedef struct NvmeDeleteQ {
@@ -500,6 +507,19 @@ enum NvmeStatusCodes {
     NVME_NO_COMPLETE            = 0xffff,
 };
 
+typedef struct NvmeNvmSetAttributesList {
+    uint16_t    nvm_set_id;
+    uint16_t    endurance_group_id;
+    uint8_t     rsvd7[4];
+    uint32_t    random_4k_read_typ;
+    uint32_t    optimal_write_size;
+    uint64_t    total_nvm_set_capacity;
+    uint64_t    total_nvm_set_capacity_u;
+    uint64_t    unalloc_nvm_set_capacity;
+    uint64_t    unalloc_nvm_set_capacity_u;
+    uint8_t     rsvd127[80];
+}NvmeNvmSetAttributesList;
+
 typedef struct NvmeFwSlotInfoLog {
     uint8_t     afi;
     uint8_t     reserved1[7];
@@ -582,7 +602,9 @@ typedef struct NvmeIdCtrl {
     uint8_t     cmic;
     uint8_t     mdts;
     uint16_t    cntlid;
-    uint8_t     rsvd255[176];
+    uint8_t     rsvd_95[16];
+    uint32_t    ctratt;
+    uint8_t     rsvd255[156];
     uint16_t    oacs;
     uint8_t     acl;
     uint8_t     aerl;
@@ -590,12 +612,24 @@ typedef struct NvmeIdCtrl {
     uint8_t     lpa;
     uint8_t     elpe;
     uint8_t     npss;
-    uint8_t     rsvd279[8];
+    uint8_t     rsvd271[8];
     uint32_t    hmpre;
     uint32_t    hmmin;
     uint64_t    tnvmcap;
+    uint64_t    tnvmcap_u;
     uint64_t    unvmcap;
-    uint8_t     rsvd511[216];
+    uint64_t    unvmcap_u;
+    uint32_t    rpmbs;
+    uint16_t    edstt;
+    uint8_t     dsto;
+    uint8_t     fwug;
+    uint16_t    kas;
+    uint16_t    hctma;
+    uint16_t    mntmt;
+    uint16_t    mxtmt;
+    uint32_t    sanicap;
+    uint16_t    nsetidmax;
+    uint8_t     rsvd511[178];
     uint8_t     sqes;
     uint8_t     cqes;
     uint16_t    rsvd515;
@@ -632,6 +666,32 @@ typedef struct NvmeIdPrimaryCtrl {
     uint16_t    vigran;
     uint8_t     rsvf4095[4016];
 } NvmeIdPrimaryCtrl;
+
+typedef struct NvmePredLatencyPerNvmSetLogPage {
+    uint8_t     status;
+    uint8_t     rsvd2;
+    uint16_t    event_type;
+    uint8_t     rsvd_31[27];
+    uint64_t    dtwin_reads_typical;
+    uint64_t    dtwin_writes_typical;
+    uint64_t    dtwin_time_maximum;
+    uint64_t    ndwin_time_minimum_high;
+    uint64_t    ndwin_time_minimum_low;
+    uint8_t     rsvd127[56];
+    uint64_t    dtwin_reads_estimate;
+    uint64_t    dtwin_writes_estimate;
+    uint64_t    dtwin_time_estimate;
+    uint8_t     rsvd511[360];
+}NvmePredLatencyPerNvmSetLogPage;
+
+typedef struct NvmePredLatencyModeConfig {
+    uint16_t    EnableEvent;
+    uint8_t     rsvd31[30];
+    uint64_t    dtwin_read_threshold;
+    uint64_t    dtwin_write_threshold;
+    uint64_t    dtwin_time_threshold;
+    uint8_t     rsvd511[456];
+}NvmePredLatencyModeConfig;
 
 enum NvmeIdCtrlOacs {
     NVME_OACS_SECURITY  = 1 << 0,
@@ -706,6 +766,9 @@ enum NvmeFeatureIds {
     NVME_WRITE_ATOMICITY            = 0xa,
     NVME_ASYNCHRONOUS_EVENT_CONF    = 0xb,
     NVME_HOST_MEM_BUF               = 0xd,
+    NVME_READ_REC_LEVEL_CONF        = 0x12,
+    NVME_PRED_LAT_MODE_CONF         = 0x13,
+    NVME_PRED_LAT_MODE_WINDOW       = 0x14,
     NVME_SOFTWARE_PROGRESS_MARKER   = 0x80
 };
 
@@ -783,6 +846,8 @@ static inline void _nvme_check_size(void)
     QEMU_BUILD_BUG_ON(sizeof(NvmeIdCtrl) != 4096);
     QEMU_BUILD_BUG_ON(sizeof(NvmeIdPrimaryCtrl) != 4096);
     QEMU_BUILD_BUG_ON(sizeof(NvmeIdNs) != 4096);
+    QEMU_BUILD_BUG_ON(sizeof(NvmePredLatencyPerNvmSetLogPage) != 512);
+    QEMU_BUILD_BUG_ON(sizeof(NvmePredLatencyModeConfig) != 512);
 }
 
 typedef struct NvmeAsyncEvent {
@@ -832,6 +897,12 @@ typedef struct NvmeCQueue {
     QTAILQ_HEAD(sq_list, NvmeSQueue) sq_list;
     QTAILQ_HEAD(cq_req_list, NvmeRequest) req_list;
 } NvmeCQueue;
+
+typedef struct NvmSet {
+  uint8_t                           set_id;
+  NvmePredLatencyPerNvmSetLogPage   log_page;
+  QEMUTimer                         *timer;
+} NvmSet;
 
 typedef struct NvmeNamespace {
     struct NvmeCtrl *ctrl;
@@ -916,6 +987,10 @@ typedef struct NvmeCtrl {
     uint16_t    num_vfs;
     uint16_t    nvq;
     uint16_t    nvi;
+    uint32_t     predictable_latency;
+    uint32_t     endurance_groups;
+    uint32_t     read_recovery_levels;
+    uint32_t     nvm_sets_enable;
 
     char            *serial;
     NvmeNamespace   *namespaces;
@@ -924,6 +999,8 @@ typedef struct NvmeCtrl {
     NvmeSQueue      admin_sq;
     NvmeCQueue      admin_cq;
     NvmeIdCtrl      id_ctrl;
+
+    NvmSet          nvm_set[32];
 
     NvmeIdPrimaryCtrl id_prim_ctrl;
     struct NvmeCtrl   **secondary_ctrl_list;

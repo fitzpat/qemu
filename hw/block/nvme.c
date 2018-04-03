@@ -34,11 +34,13 @@
 #include "qapi/visitor.h"
 #include "sysemu/block-backend.h"
 #include "hw/pci/pcie_sriov.h"
+#include "block/blockjob_int.h"
 
 #include "nvme.h"
 
 #define NVME_CTRL_LIST_MAX_ENTRIES  2047
 #define NVME_MAX_NUM_NAMESPACES     256
+#define NVME_MAX_NVM_SETS           32
 
 /*?? this is a terrible idea */
 NvmeCtrl *prim_ctrl = NULL;
@@ -343,6 +345,11 @@ static uint16_t nvme_rw(NvmeCtrl *n, NvmeNamespace *ns, NvmeCmd *cmd,
     }
 
     assert((nlb << data_shift) == req->qsg.size);
+
+    if (n->nvm_set[1].log_page.status == 0x02) {
+        BlockJob common;
+        block_job_sleep_ns(&common, QEMU_CLOCK_REALTIME, 100);
+    }
 
     req->has_sg = true;
     req->ns = ns;
@@ -649,6 +656,34 @@ static uint16_t nvme_identify_nslist(NvmeCtrl *n, NvmeIdentify *c)
     return ret;
 }
 
+static uint16_t nvme_identify_nvm_set_list(NvmeCtrl *n, NvmeIdentify *c)
+{
+    static const int data_len = 4096;
+    static const int max_entries = 31;
+    uint64_t prp1 = le64_to_cpu(c->prp1);
+    uint64_t prp2 = le64_to_cpu(c->prp2);
+    uint32_t nvmSetIndex = le32_to_cpu(c->rsvd11[0]);
+    NvmeNvmSetAttributesList *list;
+    uint16_t ret;
+    int i;
+
+    list = g_malloc0(data_len);
+    for (i = 1; i <= max_entries; i++) {
+        if ((i - 1 + nvmSetIndex) <= NVME_MAX_NVM_SETS) {
+            list[0].nvm_set_id++;  //this is the number of returned sets;
+            list[i].nvm_set_id = i + nvmSetIndex;
+            list[i].endurance_group_id = 1;
+            list[i].optimal_write_size = 4096;
+            list[i].random_4k_read_typ = 200;
+            list[i].total_nvm_set_capacity = 99999;
+            list[i].unalloc_nvm_set_capacity = 99999;
+        }
+    }
+    ret = nvme_dma_read_prp(n, (uint8_t *)list, data_len, prp1, prp2);
+    g_free(list);
+    return ret;
+}
+
 static uint16_t nvme_identify_sec_ctrl_list(NvmeCtrl *n, NvmeIdentify *c)
 {
     static const int data_len = 4096;
@@ -711,6 +746,8 @@ static uint16_t nvme_identify(NvmeCtrl *n, NvmeCmd *cmd)
         return nvme_identify_ctrl(n, c);
     case NVME_ADM_CNS_ID_NS_LIST:
         return nvme_identify_nslist(n, c);
+    case NVME_ADM_CNS_NVM_SET_LIST:
+        return nvme_identify_nvm_set_list(n,c);
     case NVME_ADM_CNS_ID_NS_LIST_ALLOC:
         return nvme_identify_ns_allocated(n, c);
     case NVME_ADM_CNS_PRIM_CTRL_CAP:
@@ -1033,8 +1070,6 @@ static uint16_t nvme_virtualization_management(NvmeCtrl *n, NvmeCmd *cmd, NvmeRe
         /*?? need to handle individual cases as well*/
         for(i = 0; i < prim_ctrl->num_vfs; i++)
         {
-//            sec_n = prim_ctrl->secondary_ctrl_list[i];
-//            nvme_write_bar(sec_n, 0x14, NVME_CC_EN(1), 0);
             nrm++;
         }
         break;
@@ -1043,7 +1078,6 @@ static uint16_t nvme_virtualization_management(NvmeCtrl *n, NvmeCmd *cmd, NvmeRe
 
     }
 
-
     req->cqe.result = nrm;
     return NVME_SUCCESS;
 }
@@ -1051,28 +1085,135 @@ static uint16_t nvme_virtualization_management(NvmeCtrl *n, NvmeCmd *cmd, NvmeRe
 static uint16_t nvme_get_host_mem_buff(NvmeCtrl *n, NvmeCmd *cmd, NvmeRequest *req)
 {
     static const int data_len = 4096;
-        uint64_t prp1 = le64_to_cpu(cmd->prp1);
-        uint64_t prp2 = le64_to_cpu(cmd->prp2);
-        uint32_t *list;
-        uint16_t ret;
+    uint64_t prp1 = le64_to_cpu(cmd->prp1);
+    uint64_t prp2 = le64_to_cpu(cmd->prp2);
+    uint32_t *list;
+    uint16_t ret;
 
-        list = g_malloc0(data_len);
-        list[0] = n->hsize;
-        list[1] = n->hmdlal;
-        list[2] = n->hmdlua;
-        list[3] = n->hmdlec;
+    list = g_malloc0(data_len);
+    list[0] = n->hsize;
+    list[1] = n->hmdlal;
+    list[2] = n->hmdlua;
+    list[3] = n->hmdlec;
 
-        ret = nvme_dma_read_prp(n, (uint8_t *)list, data_len, prp1, prp2);
-        g_free(list);
-        return ret;
+    ret = nvme_dma_read_prp(n, (uint8_t *)list, data_len, prp1, prp2);
+    g_free(list);
+    return ret;
+}
+
+static void nvme_get_predictable_latency_event_page(NvmeCtrl *n, uint8_t *log_page)
+{
+    int i;
+    int j = 8;  //set to the beginning of the entries;
+    uint8_t *counter = log_page;
+    for(i = 0; i < NVME_MAX_NVM_SETS; i++) {
+        if(n->nvm_set[i].log_page.status) {
+            *counter = *counter + 1;
+            log_page[j] = i;
+            j += 2;
+        }
+    }
+}
+
+static uint16_t nvme_get_log_page(NvmeCtrl *n, NvmeCmd *cmd, NvmeRequest *req)
+{
+    uint64_t prp1 = le64_to_cpu(cmd->prp1);
+    uint64_t prp2 = le64_to_cpu(cmd->prp2);
+    uint32_t dw10 = le32_to_cpu(cmd->cdw10);
+    uint32_t dw11 = le32_to_cpu(cmd->cdw11);
+    uint8_t log_page_id = dw10 & 0xf;
+
+    uint8_t *log_page;
+    uint16_t ret;
+
+    switch(log_page_id) {
+    case PRED_LAT_PER_NVM_SET:
+        if (dw11 > NVME_MAX_NVM_SETS || dw11 == 0) {
+            //3 cheers for getting the wrong nvm set id
+            ret = NVME_INVALID_FIELD | NVME_DNR;
+        } else {
+            log_page = g_malloc0(sizeof(NvmePredLatencyPerNvmSetLogPage));
+            memcpy(log_page, &n->nvm_set[dw11].log_page, sizeof(NvmePredLatencyPerNvmSetLogPage));
+            ret = nvme_dma_read_prp(n, (uint8_t *)log_page, sizeof(NvmePredLatencyPerNvmSetLogPage), prp1, prp2);
+            g_free (log_page);
+            ret = NVME_SUCCESS;
+        }
+        break;
+    case PRED_LAT_EVENT_AGGREGATE:
+        log_page = g_malloc0(sizeof(NvmePredLatencyPerNvmSetLogPage));
+        nvme_get_predictable_latency_event_page(n, log_page);
+        ret = nvme_dma_read_prp(n, (uint8_t *)log_page, sizeof(NvmePredLatencyPerNvmSetLogPage), prp1, prp2);
+        g_free(log_page);
+        ret = NVME_SUCCESS;
+        break;
+    default:
+        ret = NVME_INVALID_FIELD | NVME_DNR;
+    }
+
+    return ret;
+}
+
+/*
+ * Not currently used as we don't support changed windows automatically yet
+ */
+//static void nvme_change_predictable_latency_window(void *opaque)
+//{
+//    NvmSet *nvmset = opaque;
+//    //change the state of the dtwindow
+//    if (nvmset->log_page.status == 0x1) {
+//        nvmset->log_page.status = 0x2;  //NDWIN
+//    } else {
+//        nvmset->log_page.status = 0x1;  //DTWIN
+//    }
+//    //reset the timer
+//    timer_mod(nvmset->timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 500);
+//}
+
+static uint16_t nvme_predictable_latency_mode_config(NvmeCtrl *n, NvmeCmd *cmd)
+{
+    uint32_t nvmset_id = le32_to_cpu(cmd->cdw11);
+    uint32_t enable = le32_to_cpu(cmd->cdw12);
+
+    if (nvmset_id > NVME_MAX_NVM_SETS || nvmset_id == 0 || enable > 1) {
+       //3 cheers for getting the wrong nvm set id
+       return NVME_INVALID_FIELD | NVME_DNR;
+    }
+    if (enable) {
+        n->nvm_set[nvmset_id].log_page.status = 0x02; //always start in NDWIN
+    }
+    n->nvm_set[nvmset_id].log_page.status = 0;   //predictable latency disable_
+
+    /*
+     * Preliminary code for automatic transitions
+    if (enable) {
+        n->nvm_set[nvmset_id].timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, nvme_change_predictable_latency_window, &n->nvm_set[nvmset_id]);
+    } else {
+        timer_del(n->nvm_set[nvmset_id].timer);
+    }
+    */
+    return NVME_SUCCESS;
+}
+
+static uint16_t nvme_predictable_latency_mode_window(NvmeCtrl *n, NvmeCmd *cmd)
+{
+    uint32_t nvmset_id = le32_to_cpu(cmd->cdw11);
+    uint32_t window_select = le32_to_cpu(cmd->cdw12);
+
+    if (nvmset_id > NVME_MAX_NVM_SETS || nvmset_id == 0 ||
+            window_select > 2 || window_select == 0) {
+        //3 cheers for getting the wrong nvm set id
+        return NVME_INVALID_FIELD | NVME_DNR;
+    }
+    n->nvm_set[nvmset_id].log_page.status = window_select;  //go to some window...
+//    timer_mod(n->nvm_set[nvmset_id].timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 500);
+
+    return NVME_SUCCESS;
 }
 
 static uint16_t nvme_get_feature(NvmeCtrl *n, NvmeCmd *cmd, NvmeRequest *req)
 {
     uint32_t dw10 = le32_to_cpu(cmd->cdw10);
     uint32_t result;
-
-
 
     switch (dw10) {
     case NVME_VOLATILE_WRITE_CACHE:
@@ -1116,6 +1257,12 @@ static uint16_t nvme_set_feature(NvmeCtrl *n, NvmeCmd *cmd, NvmeRequest *req)
         n->hmdlua = dw14;
         n->hmdlec = dw15;
         break;
+    case NVME_PRED_LAT_MODE_CONF:
+        nvme_predictable_latency_mode_config(n, cmd);
+        break;
+    case NVME_PRED_LAT_MODE_WINDOW:
+        nvme_predictable_latency_mode_window(n, cmd);
+        break;
     default:
         return NVME_INVALID_FIELD | NVME_DNR;
     }
@@ -1129,6 +1276,8 @@ static uint16_t nvme_admin_cmd(NvmeCtrl *n, NvmeCmd *cmd, NvmeRequest *req)
         return nvme_del_sq(n, cmd);
     case NVME_ADM_CMD_CREATE_SQ:
         return nvme_create_sq(n, cmd);
+    case NVME_ADM_CMD_GET_LOG_PAGE:
+        return nvme_get_log_page(n, cmd, req);
     case NVME_ADM_CMD_DELETE_CQ:
         return nvme_del_cq(n, cmd);
     case NVME_ADM_CMD_CREATE_CQ:
@@ -1437,6 +1586,12 @@ static void nvme_init_ctrl(NvmeCtrl *n)
     id->unvmcap = 0;
     id->hmpre = n->hmpre;
     id->hmmin = n->hmmin;
+    // ?? IO Determinism
+    id->ctratt |= n->predictable_latency << 5;
+    id->ctratt |= n->endurance_groups << 4;
+    id->ctratt |= n->read_recovery_levels << 3;
+    id->ctratt |= n->nvm_sets_enable << 2;
+    id->nsetidmax = NVME_MAX_NVM_SETS;
 
     if (!pci_is_vf(&n->parent_obj))
     {
@@ -1526,6 +1681,20 @@ static void nvme_init_pci(NvmeCtrl *n)
 
 }
 
+static void nvme_init_nvm_sets(NvmeCtrl *n)
+{
+    int i;
+    for ( i = 0; i < NVME_MAX_NVM_SETS; i++) {
+        n->nvm_set[i].log_page.status = 0;
+        n->nvm_set[i].set_id = i+1;
+        n->nvm_set[i].log_page.dtwin_reads_typical = 9999;
+        n->nvm_set[i].log_page.dtwin_writes_typical = 0;
+        n->nvm_set[i].log_page.dtwin_time_maximum = 9999;
+        n->nvm_set[i].log_page.ndwin_time_minimum_low = 999;
+        n->nvm_set[i].log_page.ndwin_time_minimum_high = 9999;
+    }
+}
+
 static void nvme_init_namespaces(NvmeCtrl *n)
 {
     int i;
@@ -1592,7 +1761,7 @@ static int nvme_init(PCIDevice *pci_dev)
     }
     if (pci_is_vf(pci_dev))
     {
-        /* link the block device to the secondary controller */
+        /* link the block backend to the secondary controller */
         n->conf.blk = prim_ctrl->conf.blk;
         /* add secondary controllers to the primary controller list */
         prim_ctrl->secondary_ctrl_list[prim_ctrl->num_vfs] = n;
@@ -1612,6 +1781,7 @@ static int nvme_init(PCIDevice *pci_dev)
     nvme_init_pci(n);
     nvme_init_ctrl(n);
     nvme_init_namespaces(n);
+    nvme_init_nvm_sets(n);
 
     return 0;
 }
@@ -1640,9 +1810,13 @@ static Property nvme_props[] = {
     DEFINE_PROP_STRING("serial", NvmeCtrl, serial),
     DEFINE_PROP_UINT32("namespaces", NvmeCtrl, num_namespaces, 1),
     DEFINE_PROP_UINT32("cmb_size_mb", NvmeCtrl, cmb_size_mb, 0),
-    DEFINE_PROP_UINT32("sriov_total_vfs", NvmeCtrl, sriov_total_vfs, 2),
+    DEFINE_PROP_UINT32("sriov_total_vfs", NvmeCtrl, sriov_total_vfs, 0),
     DEFINE_PROP_UINT32("hmpre", NvmeCtrl, hmpre, 0),
     DEFINE_PROP_UINT32("hmmin", NvmeCtrl, hmmin, 0),
+    DEFINE_PROP_UINT32("predictable_latency", NvmeCtrl, predictable_latency, 0),
+    DEFINE_PROP_UINT32("endurance_groups", NvmeCtrl, endurance_groups, 0),
+    DEFINE_PROP_UINT32("read_recovery_levels", NvmeCtrl, read_recovery_levels, 0),
+    DEFINE_PROP_UINT32("nvm_sets_enable", NvmeCtrl, nvm_sets_enable, 1),
 
     DEFINE_PROP_END_OF_LIST(),
 };
